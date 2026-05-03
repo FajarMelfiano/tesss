@@ -15,9 +15,10 @@ const PLAYER_RADIUS = 15;
 const ENEMY_BASE_RADIUS = 12;
 const SPAWN_INTERVAL_MIN = 800;
 const SPAWN_INTERVAL_MAX = 1800;
-const SMOOTHING_FACTOR = 0.45;
+const DODGE_SMOOTHING_FACTOR = 0.45;
+const MAZE_SMOOTHING_FACTOR = 0.12; 
 const DODGE_SENSITIVITY = 1.3;
-const MAZE_SENSITIVITY = 0.25; // Decreased sensitivity
+const MAZE_SENSITIVITY = 0.12; // Decreased sensitivity for smoother maze play
 const POINTS_PER_LEVEL = 300; 
 
 interface GameObject {
@@ -86,8 +87,6 @@ export default function App() {
   const playerPosRef = useRef({ x: 0, y: 0 });
   const targetPosRef = useRef({ x: 0, y: 0 });
   const lastHandPosRef = useRef({ x: 0.5, y: 0.5 });
-  const startWaitRef = useRef(false);
-  const startWaitDistRef = useRef(0);
   const isFirstHandRef = useRef(true);
   const enemiesRef = useRef<GameObject[]>([]);
   const mazeWallsRef = useRef<{x: number, y: number, w: number, h: number}[]>([]);
@@ -269,8 +268,8 @@ export default function App() {
             fingerIndicatorRef.current.innerText = fingersExtended > 0 ? fingersExtended.toString() : "";
           }
 
-          // Fist is 0 fingers extended (allow 1 frame glitches or just thumb)
-          const isFist = fingersExtended <= 1;
+          // Fist is strictly 0 fingers extended
+          const isFist = fingersExtended === 0;
           
           // Track transition from fist to open to provide a grace period
           if (isFist) {
@@ -301,24 +300,12 @@ export default function App() {
               let moveDist = Math.hypot(dx, dy);
               
               if (moveDist > DEADZONE) {
-                  // If we are waiting for a significant movement after start/reset
-                  let allowMove = true;
-                  if (startWaitRef.current) {
-                      startWaitDistRef.current += moveDist;
-                      allowMove = false; // Absorb initial jolt
-                      if (startWaitDistRef.current > 0.06) { 
-                          startWaitRef.current = false;
-                      }
-                  }
+                  const scale = (moveDist - DEADZONE) / moveDist;
+                  targetPosRef.current.x += (dx * scale) * sens * currentWidth;
+                  targetPosRef.current.y += (dy * scale) * sens * currentHeight;
                   
-                  if (allowMove) {
-                      const scale = (moveDist - DEADZONE) / moveDist;
-                      targetPosRef.current.x += (dx * scale) * sens * currentWidth;
-                      targetPosRef.current.y += (dy * scale) * sens * currentHeight;
-                      
-                      targetPosRef.current.x = Math.max(0, Math.min(currentWidth, targetPosRef.current.x));
-                      targetPosRef.current.y = Math.max(0, Math.min(currentHeight, targetPosRef.current.y));
-                  }
+                  targetPosRef.current.x = Math.max(0, Math.min(currentWidth, targetPosRef.current.x));
+                  targetPosRef.current.y = Math.max(0, Math.min(currentHeight, targetPosRef.current.y));
               }
             }
             
@@ -511,9 +498,6 @@ export default function App() {
     const safeWidth = width || 640;
     const safeHeight = height || 480;
 
-    startWaitRef.current = true;
-    startWaitDistRef.current = 0;
-
     setGameMode(mode);
     gameModeRef.current = mode;
     (window as any).SELECTED_MODE = mode; // keep it in sync for restarts
@@ -638,8 +622,8 @@ export default function App() {
         targetPosRef.current.x = playerPosRef.current.x;
         targetPosRef.current.y = playerPosRef.current.y;
     } else {
-        playerPosRef.current.x += (targetPosRef.current.x - playerPosRef.current.x) * SMOOTHING_FACTOR;
-        playerPosRef.current.y += (targetPosRef.current.y - playerPosRef.current.y) * SMOOTHING_FACTOR;
+        playerPosRef.current.x += (targetPosRef.current.x - playerPosRef.current.x) * DODGE_SMOOTHING_FACTOR;
+        playerPosRef.current.y += (targetPosRef.current.y - playerPosRef.current.y) * DODGE_SMOOTHING_FACTOR;
     }
 
     playerPosRef.current.x = Math.max(PLAYER_RADIUS, Math.min(safeWidth - PLAYER_RADIUS, playerPosRef.current.x));
@@ -806,8 +790,8 @@ export default function App() {
         targetPosRef.current.x = playerPosRef.current.x;
         targetPosRef.current.y = playerPosRef.current.y;
     } else {
-        playerPosRef.current.x += (targetPosRef.current.x - playerPosRef.current.x) * SMOOTHING_FACTOR;
-        playerPosRef.current.y += (targetPosRef.current.y - playerPosRef.current.y) * SMOOTHING_FACTOR;
+        playerPosRef.current.x += (targetPosRef.current.x - playerPosRef.current.x) * MAZE_SMOOTHING_FACTOR;
+        playerPosRef.current.y += (targetPosRef.current.y - playerPosRef.current.y) * MAZE_SMOOTHING_FACTOR;
     }
     
     // Bounds check
@@ -846,9 +830,7 @@ export default function App() {
         
         // Reset tracking vars so hand movement is smooth and requires intent
         isFirstHandRef.current = true;
-        startWaitRef.current = true;
-        startWaitDistRef.current = 0;
-        
+
         // Freeze movement for 2 seconds to match level up text
         (window as any).LEVEL_TRANSITION_UNTIL = performance.now() + 2000;
         
@@ -1059,65 +1041,58 @@ export default function App() {
         </div>
       )}
 
-      {/* UI: Global Stats (Optimized via Direct Refs) */}
-      <div className="fixed top-10 left-10 z-30 hidden md:block">
-        <div className={`text-[10px] uppercase tracking-[0.4em] ${activeTheme.uiTextDimClass} mb-2`}>Neural_Telemetry</div>
-        <div className="flex items-baseline gap-4">
-          <div ref={hudScoreRef} className={`text-7xl font-black italic tracking-tighter ${activeTheme.uiTextClass}`}>
-            00000
-          </div>
-          <div className="flex flex-col">
-            <div ref={hudLvlRef} className={`text-xs font-bold ${activeTheme.uiTextDimClass} mb-1`}>LVL 1</div>
-            <div 
-                ref={hudComboRef} 
-                className="text-yellow-400 text-sm font-black italic transition-opacity duration-200 opacity-0"
-            >
-                x1.0
+
+
+      <div className="relative z-10 w-full max-w-5xl h-[85vh] flex flex-col items-center gap-6">
+        {/* UI: HUD Elements only shown when playing */}
+        {gameState === 'playing' && (
+          <div className="w-full flex justify-between items-center mt-2 px-2 md:px-0">
+            
+            {/* Left: Optional extra info or empty space */}
+            <div className="hidden md:block w-1/3">
+                {/* Empty for layout balance */}
+            </div>
+
+            {/* Center: Score & Telemetry */}
+            <div className="flex flex-col items-center w-full md:w-1/3 shrink-0">
+              <div className={`text-[10px] uppercase tracking-[0.4em] ${activeTheme.uiTextDimClass} mb-1 drop-shadow-md`}>Neural_Telemetry</div>
+              <div className="flex items-baseline gap-3">
+                <div ref={hudScoreRef} className={`text-4xl md:text-5xl font-black italic tracking-tighter ${activeTheme.uiTextClass} drop-shadow-md`}>
+                  00000
+                </div>
+                <div className="flex flex-col items-start justify-center">
+                  <div ref={hudLvlRef} className={`text-xs font-bold ${activeTheme.uiTextClass} bg-black/60 px-2 py-0.5 rounded-sm mb-1`}>LVL 1</div>
+                  <div ref={hudComboRef} className="text-yellow-400 text-xs md:text-sm font-black italic transition-opacity duration-200 opacity-0 bg-black/60 px-2 rounded-sm drop-shadow-lg">
+                      x1.0
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Right: Status & Efficiency */}
+            <div className="w-1/3 text-right hidden md:flex flex-col items-end">
+              <div className={`text-[10px] uppercase tracking-[0.4em] ${activeTheme.uiTextDimClass} mb-2`}>System_Efficiency</div>
+              <div className="flex items-center gap-3 justify-end">
+                 {activePowerUp && (
+                    <motion.div 
+                      key={activePowerUp}
+                      initial={{ scale: 0.8 }}
+                      animate={{ scale: [1, 1.1, 1] }}
+                      transition={{ repeat: Infinity }}
+                      className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest border ${activePowerUp === 'shield' ? 'border-blue-500 text-blue-400' : 'border-yellow-500 text-yellow-400'} rounded-sm bg-black/40`}
+                    >
+                      {activePowerUp}_Active
+                    </motion.div>
+                 )}
+                <div className={`w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)]`}></div>
+                <div className={`text-xs uppercase tracking-[0.2em] font-medium ${activeTheme.uiTextDimClass}`}>
+                  Live_Feed
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
+        )}
 
-      <div className="fixed top-10 right-10 z-30 text-right hidden md:block">
-        <div className={`text-[10px] uppercase tracking-[0.4em] ${activeTheme.uiTextDimClass} mb-2`}>System_Efficiency</div>
-        <div className="flex items-center gap-3 justify-end">
-           {activePowerUp && (
-              <motion.div 
-                initial={{ scale: 0.8 }}
-                animate={{ scale: [1, 1.1, 1] }}
-                transition={{ repeat: Infinity }}
-                className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest border ${activePowerUp === 'shield' ? 'border-blue-500 text-blue-400' : 'border-yellow-500 text-yellow-400'}`}
-              >
-                {activePowerUp}_Active
-              </motion.div>
-           )}
-          <div className={`w-2 h-2 rounded-full ${gameState === 'playing' ? 'bg-green-500 shadow-[0_0_12px_rgba(34,197,94,0.8)]' : 'bg-red-500 animate-pulse'} `}></div>
-          <div className={`text-xs uppercase tracking-[0.2em] font-medium ${activeTheme.uiTextDimClass}`}>
-            {gameState === 'playing' ? 'Live_Feed' : initStatus}
-          </div>
-        </div>
-      </div>
-
-      {/* Mobile HUD */}
-      <div className="md:hidden w-full flex justify-between items-start mb-8 max-w-[640px] px-4">
-        <div>
-          <div className={`text-[10px] uppercase tracking-widest ${activeTheme.uiTextDimClass} mb-1`}>Session_Score</div>
-          <div className="flex items-baseline gap-2">
-            <div ref={mHudScoreRef} className={`text-5xl font-black italic tracking-tighter ${activeTheme.uiTextClass}`}>0000</div>
-            <div ref={mHudLvlRef} className={`text-xs font-bold ${activeTheme.uiTextDimClass}`}>L1</div>
-          </div>
-          <div ref={mHudComboRef} className="text-yellow-400 text-[10px] font-black uppercase mt-1 opacity-0">Grazing x1.0</div>
-        </div>
-        <div className="text-right">
-          <div className={`text-[10px] uppercase tracking-widest ${activeTheme.uiTextDimClass} mb-1`}>Status</div>
-          <div className="flex items-center gap-2 justify-end">
-            <div className={`w-1.5 h-1.5 rounded-full ${gameState === 'playing' ? 'bg-green-500' : 'bg-red-500'} `}></div>
-            <div className={`text-[11px] uppercase tracking-widest font-bold ${activeTheme.uiTextClass}`}>{gameState === 'playing' ? 'Sync' : 'Idle'}</div>
-          </div>
-        </div>
-      </div>
-
-      <div className="relative z-10 w-full max-w-5xl h-[80vh] flex flex-col items-center">
         {/* Game Container */}
         <div ref={containerRef} className={`relative w-full h-full p-1 bg-black/20 border ${activeTheme.uiBorderClass} shadow-[0_0_100px_rgba(255,255,255,0.03)] flex-1 min-h-[300px]`}>
           <div className={`absolute -top-6 left-0 text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} flex items-center gap-2`}>
