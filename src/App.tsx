@@ -17,7 +17,7 @@ const SPAWN_INTERVAL_MIN = 800;
 const SPAWN_INTERVAL_MAX = 1800;
 const SMOOTHING_FACTOR = 0.45;
 const DODGE_SENSITIVITY = 1.3;
-const MAZE_SENSITIVITY = 0.4;
+const MAZE_SENSITIVITY = 0.25; // Decreased sensitivity
 const POINTS_PER_LEVEL = 300; 
 
 interface GameObject {
@@ -92,6 +92,7 @@ export default function App() {
   const enemiesRef = useRef<GameObject[]>([]);
   const mazeWallsRef = useRef<{x: number, y: number, w: number, h: number}[]>([]);
   const mazeGoalRef = useRef({ x: 0, y: 0, r: 30 });
+  const mazePlayerRadiusRef = useRef(15);
   const particlesRef = useRef<Particle[]>([]);
   const lastSpawnTimeRef = useRef(0);
   const fistProgressRef = useRef(0);
@@ -439,6 +440,9 @@ export default function App() {
     const cols = Math.floor(width / cellSize);
     const rows = Math.floor(height / cellSize);
     
+    // Player radius scales with the cell size so it's always fair, min 4 max 12
+    mazePlayerRadiusRef.current = Math.max(4, Math.min(12, cellSize * 0.25));
+    
     const offsetX = (width - cols * cellSize) / 2;
     const offsetY = (height - rows * cellSize) / 2;
 
@@ -536,7 +540,13 @@ export default function App() {
     setActivePowerUp(null);
     lastSpawnTimeRef.current = performance.now();
     
+    // Give 2.5 seconds of preparation time on new start!
+    (window as any).LEVEL_TRANSITION_UNTIL = performance.now() + 2500;
+    
     isFirstHandRef.current = true;
+    (window as any).WAS_FIST = true;
+    (window as any).LAST_FIST_RELEASE = Date.now();
+    
     if (mode === 'dodge') {
       const startPos = { x: safeWidth / 2, y: safeHeight / 2 };
       playerPosRef.current = { ...startPos };
@@ -623,13 +633,22 @@ export default function App() {
     // Use antiCampMult in gameplay speed calculations together with difficultyRef.current
 
     // 3. Update Player Position
-    playerPosRef.current.x += (targetPosRef.current.x - playerPosRef.current.x) * SMOOTHING_FACTOR;
-    playerPosRef.current.y += (targetPosRef.current.y - playerPosRef.current.y) * SMOOTHING_FACTOR;
+    const isFrozen = performance.now() < ((window as any).LEVEL_TRANSITION_UNTIL || 0);
+    if (isFrozen) {
+        targetPosRef.current.x = playerPosRef.current.x;
+        targetPosRef.current.y = playerPosRef.current.y;
+    } else {
+        playerPosRef.current.x += (targetPosRef.current.x - playerPosRef.current.x) * SMOOTHING_FACTOR;
+        playerPosRef.current.y += (targetPosRef.current.y - playerPosRef.current.y) * SMOOTHING_FACTOR;
+    }
+
     playerPosRef.current.x = Math.max(PLAYER_RADIUS, Math.min(safeWidth - PLAYER_RADIUS, playerPosRef.current.x));
     playerPosRef.current.y = Math.max(PLAYER_RADIUS, Math.min(safeHeight - PLAYER_RADIUS, playerPosRef.current.y));
 
     // 4. Update Enemies, Powerups, and Collisions
-    spawnEnemy(time);
+    if (!isFrozen) {
+        spawnEnemy(time);
+    }
     
     let gameOver = false;
     enemiesRef.current = enemiesRef.current.filter((obj) => {
@@ -742,8 +761,20 @@ export default function App() {
     ctx.fill();
     ctx.shadowBlur = 0;
 
+    if (isFrozen) {
+        ctx.fillStyle = "white";
+        ctx.font = "bold 24px monospace";
+        ctx.textAlign = "center";
+        const timeLeft = Math.ceil(((window as any).LEVEL_TRANSITION_UNTIL - performance.now()) / 1000);
+        ctx.fillText(`SYSTEM STANDBY: ${timeLeft}s`, safeWidth / 2, safeHeight / 2 - 40);
+        ctx.font = "12px monospace";
+        ctx.fillText("Syncing neural pathways...", safeWidth / 2, safeHeight / 2 - 20);
+    }
+
     // Update Score Logic (Ref only for performance)
-    scoreRef.current += 1 + (Math.floor(comboRef.current) / 2);
+    if (!isFrozen) {
+        scoreRef.current += 1 + (Math.floor(comboRef.current) / 2);
+    }
     const currentScore = Math.floor(scoreRef.current / 10);
 
     const nextLevel = Math.floor(currentScore / POINTS_PER_LEVEL) + 1;
@@ -780,8 +811,8 @@ export default function App() {
     }
     
     // Bounds check
-    playerPosRef.current.x = Math.max(PLAYER_RADIUS, Math.min(safeWidth - PLAYER_RADIUS, playerPosRef.current.x));
-    playerPosRef.current.y = Math.max(PLAYER_RADIUS, Math.min(safeHeight - PLAYER_RADIUS, playerPosRef.current.y));
+    playerPosRef.current.x = Math.max(mazePlayerRadiusRef.current, Math.min(safeWidth - mazePlayerRadiusRef.current, playerPosRef.current.x));
+    playerPosRef.current.y = Math.max(mazePlayerRadiusRef.current, Math.min(safeHeight - mazePlayerRadiusRef.current, playerPosRef.current.y));
 
     // 2. Collision Detection with Maze Walls
     let gameOver = false;
@@ -793,7 +824,7 @@ export default function App() {
         const dy = playerPosRef.current.y - closestY;
         const distance = Math.sqrt(dx * dx + dy * dy);
         
-        if (distance < PLAYER_RADIUS) {
+        if (distance < mazePlayerRadiusRef.current) {
             gameOver = true;
             break;
         }
@@ -804,7 +835,7 @@ export default function App() {
     const goalDy = playerPosRef.current.y - mazeGoalRef.current.y;
     const goalDist = Math.sqrt(goalDx * goalDx + goalDy * goalDy);
     
-    if (goalDist < PLAYER_RADIUS + mazeGoalRef.current.r) {
+    if (goalDist < mazePlayerRadiusRef.current + mazeGoalRef.current.r) {
         // Level Up & New Maze
         scoreRef.current += 1000;
         levelRef.current += 1;
@@ -877,12 +908,24 @@ export default function App() {
     ctx.shadowBlur = 15;
     ctx.shadowColor = theme.playerShadow;
     ctx.beginPath();
-    ctx.arc(playerPosRef.current.x, playerPosRef.current.y, PLAYER_RADIUS, 0, Math.PI * 2);
+    ctx.arc(playerPosRef.current.x, playerPosRef.current.y, mazePlayerRadiusRef.current, 0, Math.PI * 2);
     ctx.fill();
     ctx.shadowBlur = 0;
+    
+    if (isFrozen) {
+        ctx.fillStyle = "white";
+        ctx.font = "bold 24px monospace";
+        ctx.textAlign = "center";
+        const timeLeft = Math.ceil(((window as any).LEVEL_TRANSITION_UNTIL - performance.now()) / 1000);
+        ctx.fillText(`SYSTEM STANDBY: ${timeLeft}s`, safeWidth / 2, safeHeight / 2 - 40);
+        ctx.font = "12px monospace";
+        ctx.fillText("Syncing neural pathways...", safeWidth / 2, safeHeight / 2 - 20);
+    }
 
     // Update Scores
-    scoreRef.current += 1;
+    if (!isFrozen) {
+        scoreRef.current += 1;
+    }
 
     if (gameOver) {
         handleGameOver();
