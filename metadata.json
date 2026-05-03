@@ -1,0 +1,6 @@
+{
+  "name": "Gesture Dodge",
+  "description": "A minimalist browser game where you dodge falling obstacles using hand gestures and your webcam.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": []
+}
