@@ -769,8 +769,15 @@ export default function App() {
     if (!ctx) return;
 
     // 1. Update Player Position
-    playerPosRef.current.x += (targetPosRef.current.x - playerPosRef.current.x) * SMOOTHING_FACTOR;
-    playerPosRef.current.y += (targetPosRef.current.y - playerPosRef.current.y) * SMOOTHING_FACTOR;
+    const isFrozen = performance.now() < ((window as any).LEVEL_TRANSITION_UNTIL || 0);
+    
+    if (isFrozen) {
+        targetPosRef.current.x = playerPosRef.current.x;
+        targetPosRef.current.y = playerPosRef.current.y;
+    } else {
+        playerPosRef.current.x += (targetPosRef.current.x - playerPosRef.current.x) * SMOOTHING_FACTOR;
+        playerPosRef.current.y += (targetPosRef.current.y - playerPosRef.current.y) * SMOOTHING_FACTOR;
+    }
     
     // Bounds check
     playerPosRef.current.x = Math.max(PLAYER_RADIUS, Math.min(safeWidth - PLAYER_RADIUS, playerPosRef.current.x));
@@ -805,9 +812,15 @@ export default function App() {
         setShowLevelUp(true);
         setTimeout(() => setShowLevelUp(false), 2000);
         generateMaze(safeWidth, safeHeight, levelRef.current);
-        // Reset player to center for next level
-        playerPosRef.current = { x: safeWidth/2, y: safeHeight/2 };
-        targetPosRef.current = { x: safeWidth/2, y: safeHeight/2 };
+        
+        // Reset tracking vars so hand movement is smooth and requires intent
+        isFirstHandRef.current = true;
+        startWaitRef.current = true;
+        startWaitDistRef.current = 0;
+        
+        // Freeze movement for 2 seconds to match level up text
+        (window as any).LEVEL_TRANSITION_UNTIL = performance.now() + 2000;
+        
         createParticles(mazeGoalRef.current.x, mazeGoalRef.current.y, '#4ade80', 20);
     }
 
