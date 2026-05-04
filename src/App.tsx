@@ -26,7 +26,7 @@ interface GameObject {
   y: number;
   radius: number;
   speed: number;
-  type?: 'enemy' | 'shield' | 'slow' | 'star';
+  type?: 'enemy' | 'homing' | 'shield' | 'slow' | 'point' | 'emp';
 }
 
 interface Particle {
@@ -113,6 +113,20 @@ export default function App() {
     const updateSize = () => {
       if (containerRef.current) {
         const { width, height } = containerRef.current.getBoundingClientRect();
+        
+        const oldW = dimensionsRef.current.width;
+        const oldH = dimensionsRef.current.height;
+        
+        // On mobile, the height can bounce due to the address bar. 
+        // We only update if width changes or height changes significantly.
+        if (oldW > 0 && oldH > 0) {
+            const diffW = Math.abs(width - oldW);
+            const diffH = Math.abs(height - oldH);
+            if (diffW < 10 && diffH < 150) {
+                return; // Ignore small height changes (typical mobile browser bar)
+            }
+        }
+
         setDimensions({ width, height });
         dimensionsRef.current = { width, height };
         
@@ -228,7 +242,7 @@ export default function App() {
           const landmarks = results.multiHandLandmarks[0];
           
           // 1. Relative Position Tracking
-          const indexTip = landmarks[8];
+          const palmCenter = landmarks[9];
           const currentWidth = dimensionsRef.current.width;
           const currentHeight = dimensionsRef.current.height;
 
@@ -239,8 +253,8 @@ export default function App() {
           setIsTooClose(handSize > 0.35);
 
           // Mirror X
-          const rawX = (1 - indexTip.x);
-          const rawY = indexTip.y;
+          const rawX = (1 - palmCenter.x);
+          const rawY = palmCenter.y;
           
           // 2. Fist Detection Logic (Moved up)
           const wrist = landmarks[0];
@@ -280,36 +294,37 @@ export default function App() {
           }
 
           // 1. Relative Position Tracking
-          if (isFirstHandRef.current) {
+          if (isFirstHandRef.current || isFist) {
+            // Anchor hand position without moving target pointer
             lastHandPosRef.current = { x: rawX, y: rawY };
-            if ((window as any).GAME_STATE_INTERNAL === 'menu') {
+            
+            if (isFirstHandRef.current && (window as any).GAME_STATE_INTERNAL === 'menu') {
                 targetPosRef.current.x = currentWidth / 2;
                 targetPosRef.current.y = currentHeight / 2;
             }
-            isFirstHandRef.current = false;
+            
+            // Only release "first hand" lock if we start tracking with an open hand
+            if (!isFist) {
+                isFirstHandRef.current = false;
+            }
           } else {
             const dx = rawX - lastHandPosRef.current.x;
             const dy = rawY - lastHandPosRef.current.y;
             
-            // Allow pointer to move only if not making a fist AND completely finished unclenching
-            const timeSinceRelease = Date.now() - ((window as any).LAST_FIST_RELEASE || 0);
+            const sens = (window as any).GAME_STATE_INTERNAL === 'maze' ? MAZE_SENSITIVITY : DODGE_SENSITIVITY;
+            const DEADZONE = 0.001; // Tiny deadzone to ignore camera jitter
+            let moveDist = Math.hypot(dx, dy);
             
-            if (!isFist && timeSinceRelease > 600) {
-              const sens = (window as any).GAME_STATE_INTERNAL === 'maze' ? MAZE_SENSITIVITY : DODGE_SENSITIVITY * 1.5;
-              const DEADZONE = 0.002;
-              let moveDist = Math.hypot(dx, dy);
-              
-              if (moveDist > DEADZONE) {
-                  const scale = (moveDist - DEADZONE) / moveDist;
-                  targetPosRef.current.x += (dx * scale) * sens * currentWidth;
-                  targetPosRef.current.y += (dy * scale) * sens * currentHeight;
-                  
-                  targetPosRef.current.x = Math.max(0, Math.min(currentWidth, targetPosRef.current.x));
-                  targetPosRef.current.y = Math.max(0, Math.min(currentHeight, targetPosRef.current.y));
-              }
+            if (moveDist > DEADZONE) {
+                const scale = (moveDist - DEADZONE) / moveDist;
+                targetPosRef.current.x += (dx * scale) * sens * currentWidth;
+                targetPosRef.current.y += (dy * scale) * sens * currentHeight;
+                
+                targetPosRef.current.x = Math.max(0, Math.min(currentWidth, targetPosRef.current.x));
+                targetPosRef.current.y = Math.max(0, Math.min(currentHeight, targetPosRef.current.y));
             }
             
-            // Always update last known raw position to avoid cursor jump on fist release
+            // Always update last known raw position 
             lastHandPosRef.current = { x: rawX, y: rawY };
           }
           
@@ -558,26 +573,41 @@ export default function App() {
     const currentSpawnDelay = Math.max(SPAWN_INTERVAL_MIN - 200, spawnDelayBase - (scoreRef.current / 80));
 
     if (timeSinceLastSpawn > currentSpawnDelay) {
-      const isPowerUp = Math.random() < 0.1; // 10% chance for power-up (slightly higher)
-      const type = isPowerUp 
-        ? (Math.random() < 0.5 ? 'shield' : 'slow') 
-        : 'enemy';
+      const rand = Math.random();
+      let type: GameObject['type'] = 'enemy';
+      
+      if (rand < 0.1) {
+          const pRand = Math.random();
+          if (pRand < 0.2) type = 'emp';
+          else if (pRand < 0.6) type = 'shield';
+          else type = 'slow';
+      } else if (rand < 0.25) {
+          type = 'point';
+      } else if (rand < 0.35 && levelRef.current > 1) {
+          type = 'homing';
+      }
 
-      const radius = type === 'enemy' 
-        ? ENEMY_BASE_RADIUS + Math.random() * (levelRef.current * 2)
-        : 15;
+      const radius = type === 'emp' ? 16 :
+                     type === 'point' ? 10 :
+                     type === 'homing' ? 12 :
+                     (type === 'shield' || type === 'slow') ? 15 :
+                     ENEMY_BASE_RADIUS + Math.random() * (levelRef.current * 2);
 
       const x = Math.random() * (safeWidth - radius * 2) + radius;
       
-      // Starting speed is lower (1.5) and grows slower
       const baseSpeed = (1.5 + (levelRef.current * 0.4) + Math.random() * 1.5) * difficultyRef.current * antiCamp;
       const heightFactor = safeHeight / 600; 
+
+      let speedMult = 1;
+      if (type === 'homing') speedMult = 0.6;
+      if (type === 'point') speedMult = 1.3;
+      if (type === 'shield' || type === 'slow' || type === 'emp') speedMult = 0.8;
 
       enemiesRef.current.push({
         x,
         y: -radius,
         radius,
-        speed: type === 'slow' ? baseSpeed * 0.5 : baseSpeed * heightFactor,
+        speed: baseSpeed * heightFactor * speedMult,
         type
       });
       lastSpawnTimeRef.current = currentTime;
@@ -634,10 +664,19 @@ export default function App() {
         spawnEnemy(time);
     }
     
+    let activeEmp = false;
     let gameOver = false;
+
     enemiesRef.current = enemiesRef.current.filter((obj) => {
       let speedMult = 1;
       if (activePowerUp === 'slow') speedMult = 0.5;
+      
+      if (obj.type === 'homing') {
+          const dxp = playerPosRef.current.x - obj.x;
+          const ext = Math.min(2 * speedMult, Math.abs(dxp) * 0.05);
+          obj.x += Math.sign(dxp) * ext;
+      }
+      
       obj.y += obj.speed * speedMult;
 
       const dx = obj.x - playerPosRef.current.x;
@@ -646,7 +685,7 @@ export default function App() {
 
       // Collision Check
       if (distance < obj.radius + PLAYER_RADIUS) {
-        if (obj.type === 'enemy') {
+        if (obj.type === 'enemy' || obj.type === 'homing') {
             if (activePowerUp === 'shield') {
                 createParticles(obj.x, obj.y, '#3b82f6', 15);
                 setActivePowerUp(null); // Shield consumed
@@ -655,8 +694,17 @@ export default function App() {
             } else {
                 gameOver = true;
             }
+        } else if (obj.type === 'point') {
+            createParticles(obj.x, obj.y, '#10b981', 10);
+            scoreRef.current += 100;
+            comboRef.current = Math.min(50, comboRef.current + 2);
+            return false;
+        } else if (obj.type === 'emp') {
+            createParticles(obj.x, obj.y, '#a855f7', 20);
+            activeEmp = true;
+            return false;
         } else {
-            // Pick up power-up
+            // Pick up power-up shield/slow
             setActivePowerUp(obj.type!);
             powerUpTimerRef.current = 5000; // 5 seconds
             createParticles(obj.x, obj.y, obj.type === 'shield' ? '#3b82f6' : '#facc15', 12);
@@ -665,7 +713,7 @@ export default function App() {
       }
 
       // Grazing System (Close Call)
-      if (obj.type === 'enemy' && distance < (obj.radius + PLAYER_RADIUS) + 30) {
+      if ((obj.type === 'enemy' || obj.type === 'homing') && distance < (obj.radius + PLAYER_RADIUS) + 30) {
           comboRef.current = Math.min(50, comboRef.current + 0.1);
       } else {
           comboRef.current = Math.max(0, comboRef.current - 0.05);
@@ -673,6 +721,21 @@ export default function App() {
 
       return obj.y < safeHeight + obj.radius;
     });
+
+    if (activeEmp) {
+       const empX = playerPosRef.current.x;
+       const empY = playerPosRef.current.y;
+       
+       enemiesRef.current.forEach(e => {
+          if (e.type === 'enemy' || e.type === 'homing') {
+             createParticles(e.x, e.y, theme.enemyColor, 5);
+             scoreRef.current += 20; 
+          }
+       });
+       
+       enemiesRef.current = enemiesRef.current.filter(e => e.type !== 'enemy' && e.type !== 'homing');
+       (window as any).EMP_EFFECT = { r: 50, x: empX, y: empY, maxR: safeWidth * 1.5 };
+    }
 
     // 5. Update Particles
     particlesRef.current = particlesRef.current.filter(p => {
@@ -713,18 +776,54 @@ export default function App() {
       if (obj.type === 'enemy') {
           ctx.fillStyle = theme.enemyColor;
           ctx.shadowColor = theme.enemyColor;
+      } else if (obj.type === 'homing') {
+          ctx.fillStyle = '#ef4444'; // Bright Red
+          ctx.shadowColor = '#ef4444';
       } else if (obj.type === 'shield') {
           ctx.fillStyle = theme.shieldColor;
           ctx.shadowColor = theme.shieldColor;
       } else if (obj.type === 'slow') {
           ctx.fillStyle = theme.speedColor;
           ctx.shadowColor = theme.speedColor;
+      } else if (obj.type === 'point') {
+          ctx.fillStyle = '#10b981'; // Green
+          ctx.shadowColor = '#10b981';
+      } else if (obj.type === 'emp') {
+          ctx.fillStyle = '#a855f7'; // Purple
+          ctx.shadowColor = '#a855f7';
       }
       
       ctx.beginPath();
-      ctx.arc(obj.x, obj.y, obj.radius, 0, Math.PI * 2);
+      if (obj.type === 'point' || obj.type === 'emp') {
+          // Draw diamond
+          ctx.moveTo(obj.x, obj.y - obj.radius);
+          ctx.lineTo(obj.x + obj.radius, obj.y);
+          ctx.lineTo(obj.x, obj.y + obj.radius);
+          ctx.lineTo(obj.x - obj.radius, obj.y);
+          ctx.closePath();
+      } else {
+          ctx.arc(obj.x, obj.y, obj.radius, 0, Math.PI * 2);
+      }
       ctx.fill();
     });
+
+    // Draw EMP Effect
+    if ((window as any).EMP_EFFECT) {
+       const emp = (window as any).EMP_EFFECT;
+       ctx.beginPath();
+       ctx.arc(emp.x, emp.y, emp.r, 0, Math.PI * 2);
+       ctx.strokeStyle = `rgba(168, 85, 247, ${ Math.max(0, 1 - emp.r/emp.maxR) })`;
+       ctx.lineWidth = 15;
+       ctx.shadowBlur = 20;
+       ctx.shadowColor = '#a855f7';
+       ctx.stroke();
+       ctx.shadowBlur = 0;
+       
+       emp.r += 30; // speed of expansion
+       if (emp.r > emp.maxR) {
+           (window as any).EMP_EFFECT = null;
+       }
+    }
 
     // Draw Player
     ctx.fillStyle = theme.playerColor;
@@ -743,7 +842,12 @@ export default function App() {
     ctx.beginPath();
     ctx.arc(playerPosRef.current.x, playerPosRef.current.y, PLAYER_RADIUS, 0, Math.PI * 2);
     ctx.fill();
+
+    // Visibility Ring
     ctx.shadowBlur = 0;
+    ctx.strokeStyle = activeThemeRef.current.id === 'terminal' || activeThemeRef.current.id === 'midnight' ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.3)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
 
     if (isFrozen) {
         ctx.fillStyle = "white";
@@ -892,7 +996,12 @@ export default function App() {
     ctx.beginPath();
     ctx.arc(playerPosRef.current.x, playerPosRef.current.y, mazePlayerRadiusRef.current, 0, Math.PI * 2);
     ctx.fill();
+    
+    // Add white/black ring based on theme to ensure visibility
     ctx.shadowBlur = 0;
+    ctx.strokeStyle = theme.id === 'terminal' || theme.id === 'midnight' ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.3)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
     
     if (isFrozen) {
         ctx.fillStyle = "white";
@@ -965,11 +1074,11 @@ export default function App() {
     }, []);
 
   return (
-    <div className={`min-h-screen ${activeTheme.uiBgClass} ${activeTheme.uiTextClass} font-mono flex flex-col items-center justify-center p-4 overflow-hidden select-none transition-colors duration-200 ${isHit ? 'hit-flash' : ''}`}>
+    <div className={`fixed inset-0 w-full h-full overscroll-none touch-none ${activeTheme.uiBgClass} ${activeTheme.uiTextClass} font-mono flex flex-col items-center justify-center p-2 md:p-4 overflow-hidden select-none transition-colors duration-200 ${isHit ? 'hit-flash' : ''}`}>
       
       {/* Theme Selector (Only in Menu) */}
       {gameState === 'menu' && (
-        <div className="absolute top-6 right-6 z-50 flex items-center gap-4">
+        <div className="absolute top-4 right-4 md:top-6 md:right-6 z-50 flex items-center gap-2 md:gap-4 scale-90 md:scale-100 origin-top-right">
           <button 
             onClick={() => {
               const idx = themes.findIndex(t => t.id === activeThemeId);
@@ -983,7 +1092,7 @@ export default function App() {
           
           <div className="flex items-center gap-2">
              <Palette size={16} className={activeTheme.uiTextDimClass} />
-             <span className={`text-[10px] uppercase font-bold tracking-[0.2em] w-24 text-center ${activeTheme.uiTextClass}`}>{activeTheme.name}</span>
+             <span className={`text-[9px] md:text-[10px] uppercase font-bold tracking-[0.2em] w-20 md:w-24 text-center ${activeTheme.uiTextClass}`}>{activeTheme.name}</span>
           </div>
 
           <button 
@@ -1043,81 +1152,92 @@ export default function App() {
 
 
 
-      <div className="relative z-10 w-full max-w-5xl h-[85vh] flex flex-col items-center gap-6">
-        {/* UI: HUD Elements only shown when playing */}
-        {gameState === 'playing' && (
-          <div className="w-full flex justify-between items-center mt-2 px-2 md:px-0">
-            
-            {/* Left: Optional extra info or empty space */}
-            <div className="hidden md:block w-1/3">
-                {/* Empty for layout balance */}
-            </div>
-
-            {/* Center: Score & Telemetry */}
-            <div className="flex flex-col items-center w-full md:w-1/3 shrink-0">
-              <div className={`text-[10px] uppercase tracking-[0.4em] ${activeTheme.uiTextDimClass} mb-1 drop-shadow-md`}>Neural_Telemetry</div>
-              <div className="flex items-baseline gap-3">
-                <div ref={hudScoreRef} className={`text-4xl md:text-5xl font-black italic tracking-tighter ${activeTheme.uiTextClass} drop-shadow-md`}>
-                  00000
-                </div>
-                <div className="flex flex-col items-start justify-center">
-                  <div ref={hudLvlRef} className={`text-xs font-bold ${activeTheme.uiTextClass} bg-black/60 px-2 py-0.5 rounded-sm mb-1`}>LVL 1</div>
-                  <div ref={hudComboRef} className="text-yellow-400 text-xs md:text-sm font-black italic transition-opacity duration-200 opacity-0 bg-black/60 px-2 rounded-sm drop-shadow-lg">
-                      x1.0
+      <div className="relative z-10 w-full max-w-5xl flex-1 flex flex-col items-center p-2 md:p-6 overflow-hidden">
+        {/* UI: HUD Elements - Fixed height container to prevent layout shifting */}
+        <div className="w-full h-20 md:h-24 flex items-center justify-center shrink-0">
+          <AnimatePresence>
+            {gameState === 'playing' && (
+              <motion.div 
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                className="w-full flex justify-between items-center px-4 md:px-0"
+              >
+                
+                {/* Left: Info Accents (Desktop only) */}
+                <div className="hidden md:block w-1/3">
+                  <div className={`text-[9px] uppercase tracking-[0.3em] ${activeTheme.uiTextDimClass} opacity-50`}>
+                    Link_Stability: 100%<br />
+                    Packet_Loss: 0.00%
                   </div>
                 </div>
-              </div>
-            </div>
 
-            {/* Right: Status & Efficiency */}
-            <div className="w-1/3 text-right hidden md:flex flex-col items-end">
-              <div className={`text-[10px] uppercase tracking-[0.4em] ${activeTheme.uiTextDimClass} mb-2`}>System_Efficiency</div>
-              <div className="flex items-center gap-3 justify-end">
-                 {activePowerUp && (
-                    <motion.div 
-                      key={activePowerUp}
-                      initial={{ scale: 0.8 }}
-                      animate={{ scale: [1, 1.1, 1] }}
-                      transition={{ repeat: Infinity }}
-                      className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest border ${activePowerUp === 'shield' ? 'border-blue-500 text-blue-400' : 'border-yellow-500 text-yellow-400'} rounded-sm bg-black/40`}
-                    >
-                      {activePowerUp}_Active
-                    </motion.div>
-                 )}
-                <div className={`w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)]`}></div>
-                <div className={`text-xs uppercase tracking-[0.2em] font-medium ${activeTheme.uiTextDimClass}`}>
-                  Live_Feed
+                {/* Center: Score & Telemetry - Dominant HUD */}
+                <div className="flex flex-col items-center w-full md:w-1/3 shrink-0">
+                  <div className={`text-[9px] md:text-[10px] uppercase tracking-[0.4em] ${activeTheme.uiTextDimClass} mb-1 drop-shadow-md`}>Neural_Telemetry</div>
+                  <div className="flex items-baseline gap-3 bg-black/40 backdrop-blur-sm px-6 py-2 rounded-xl border border-white/5 shadow-2xl">
+                    <div ref={hudScoreRef} className={`text-4xl md:text-5xl font-black italic tracking-tighter ${activeTheme.uiTextClass} drop-shadow-md`}>
+                      00000
+                    </div>
+                    <div className="flex flex-col items-start justify-center">
+                      <div ref={hudLvlRef} className={`text-[10px] font-bold ${activeTheme.uiTextClass} bg-black/60 px-2 py-0.5 rounded-sm mb-1`}>LVL 1</div>
+                      <div ref={hudComboRef} className="text-yellow-400 text-[10px] md:text-xs font-black italic transition-opacity duration-200 opacity-0 bg-black/60 px-2 rounded-sm drop-shadow-lg">
+                          x1.0
+                      </div>
+                    </div>
+                  </div>
+                  {/* Mobile Level shortcut */}
+                  <div ref={mHudLvlRef} className="md:hidden mt-1 text-[8px] font-bold uppercase tracking-widest opacity-50">L1</div>
                 </div>
-              </div>
-            </div>
-          </div>
-        )}
 
-        {/* Game Container */}
-        <div ref={containerRef} className={`relative w-full h-full p-1 bg-black/20 border ${activeTheme.uiBorderClass} shadow-[0_0_100px_rgba(255,255,255,0.03)] flex-1 min-h-[300px]`}>
-          <div className={`absolute -top-6 left-0 text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} flex items-center gap-2`}>
+                {/* Right: Status & Efficiency */}
+                <div className="w-1/3 text-right hidden md:flex flex-col items-end">
+                  <div className={`text-[10px] uppercase tracking-[0.4em] ${activeTheme.uiTextDimClass} mb-2`}>System_Efficiency</div>
+                  <div className="flex items-center gap-3 justify-end">
+                     {activePowerUp && (
+                        <motion.div 
+                          key={activePowerUp}
+                          initial={{ scale: 0.8 }}
+                          animate={{ scale: [1, 1.1, 1] }}
+                          transition={{ repeat: Infinity }}
+                          className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest border ${activePowerUp === 'shield' ? 'border-blue-500 text-blue-400' : 'border-yellow-500 text-yellow-400'} rounded-sm bg-black/60`}
+                        >
+                          {activePowerUp}_Active
+                        </motion.div>
+                     )}
+                    <div className={`w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)]`}></div>
+                    <div className={`text-xs uppercase tracking-[0.2em] font-medium ${activeTheme.uiTextDimClass}`}>
+                      Live_Feed
+                    </div>
+                  </div>
+                </div>
+
+                {/* Mobile Specific Refs (mapped but hidden to keep ref logic working) */}
+                <div className="hidden">
+                   <div ref={mHudScoreRef}></div>
+                   <div ref={mHudComboRef}></div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Game Container Wrapper - responsive aspect ratio */}
+        <div className="relative w-full flex-1 flex items-center justify-center min-h-0 z-20 px-2 lg:px-8">
+          <div 
+            ref={containerRef} 
+            className={`relative bg-black/20 border ${activeTheme.uiBorderClass} shadow-[0_0_100px_rgba(255,255,255,0.03)] flex flex-col w-full max-h-full min-h-0 min-w-0 flex-shrink overflow-hidden`}
+            style={{
+               aspectRatio: '16/10',
+            }}
+          >
+          <div className={`absolute -top-1 md:-top-6 left-0 text-[8px] md:text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} flex items-center gap-2 px-2 md:px-0`}>
             <span className={`w-1 h-1 ${gameState === 'playing' ? 'bg-green-400' : 'bg-white/20'} rounded-full animate-ping`} />
             Coord_Stream_SYNC
           </div>
 
-          {/* WebCam Feed */}
-          <div className="absolute -bottom-4 right-0 w-24 h-18 sm:w-24 sm:h-18 md:w-32 md:h-24 border border-white/10 overflow-hidden z-30 bg-black translate-y-full mt-2">
-             <video 
-              ref={videoRef} 
-              autoPlay 
-              playsInline 
-              muted
-              className="absolute inset-0 w-full h-full object-cover scale-x-[-1] opacity-50 grayscale"
-            />
-            <canvas
-              ref={webcamCanvasRef}
-              className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
-              width={128} // Just small resolution for overlay
-              height={96}
-            />
-            <div className="absolute bottom-1 left-1 bg-black/60 px-1 text-[7px] uppercase tracking-tighter text-white/50 z-10 pointer-events-none">
-              Biometric_Ref
-            </div>
+          <div className={`absolute -top-1 md:-top-6 right-0 text-[8px] md:text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} hidden sm:block`}>
+            Bitrate: {(Math.random() * 5 + 15).toFixed(1)} Mbps
           </div>
 
           {/* Game Canvas */}
@@ -1192,7 +1312,7 @@ export default function App() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className={`absolute inset-0 ${activeTheme.uiBgClass} flex flex-col items-center justify-center gap-6 z-50 p-6`}
+                className={`fixed inset-0 ${activeTheme.uiBgClass} flex flex-col items-center justify-center gap-6 z-[100] p-6`}
               >
                 <div className="space-y-2 text-center mb-4">
                   <h2 className={`text-2xl font-light tracking-[0.2em] uppercase ${activeTheme.uiTextDimClass}`}>System Boot</h2>
@@ -1249,16 +1369,17 @@ export default function App() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className={`absolute inset-0 ${activeTheme.uiBgClass} backdrop-blur-md flex flex-col items-center justify-center p-8 z-40`}
+                className={`fixed inset-0 w-full h-[100dvh] ${activeTheme.uiBgClass} backdrop-blur-md z-[100] overflow-y-auto overflow-x-hidden`}
               >
-                <div className="w-full max-w-2xl space-y-12">
+                <div className="min-h-full flex flex-col items-center justify-center p-4 pt-16 pb-8 md:p-8">
+                  <div className="w-full max-w-2xl space-y-6 md:space-y-12">
                    <div className="space-y-2 text-center">
-                    <div className={`text-[10px] ${activeTheme.uiTextDimClass} uppercase tracking-[0.6em] mb-4`}>Core_System_Selection</div>
-                    <h2 className={`text-4xl font-light tracking-[0.3em] uppercase ${activeTheme.uiTextClass}`}>Interface Menu</h2>
+                    <div className={`text-[9px] md:text-[10px] ${activeTheme.uiTextDimClass} uppercase tracking-[0.6em] mb-4`}>Core_System_Selection</div>
+                    <h2 className={`text-2xl md:text-5xl font-light tracking-[0.3em] uppercase ${activeTheme.uiTextClass}`}>Interface Menu</h2>
                     <div className={`h-[1px] w-12 ${activeTheme.uiTextClass} opacity-20 mx-auto`} />
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
                     {/* Dodge Mode Option */}
                     <div 
                       onClick={() => startGame('dodge')}
@@ -1267,18 +1388,18 @@ export default function App() {
                         setSelectedMenuItem(0);
                       }}
                       onMouseLeave={() => setHoveredButton(null)}
-                      className={`relative p-8 border transition-all duration-300 cursor-pointer flex flex-col gap-4 ${hoveredButton === 'dodge' ? `${activeTheme.uiAccentClass} scale-105 shadow-[0_0_50px_rgba(255,255,255,0.1)]` : `bg-black/20 ${activeTheme.uiTextDimClass} ${activeTheme.uiBorderClass} hover:border-white/30`}`}
+                      className={`relative p-5 md:p-8 border transition-all duration-300 cursor-pointer flex flex-col gap-3 md:gap-4 ${hoveredButton === 'dodge' ? `${activeTheme.uiAccentClass} scale-100 md:scale-105 shadow-[0_0_30px_rgba(255,255,255,0.1)]` : `bg-black/20 ${activeTheme.uiTextDimClass} ${activeTheme.uiBorderClass} hover:border-white/30`}`}
                     >
                       <div className="text-[10px] uppercase tracking-[0.4em] font-black flex justify-between">
                         <span>Mode_01</span>
-                        <span className={`text-[9px] px-1.5 py-0.5 rounded ml-2 ${activeTheme.uiTextClass} bg-white/10`}>1 FINGER</span>
+                        <span className={`text-[8px] md:text-[9px] px-1.5 py-0.5 rounded ml-2 ${activeTheme.uiTextClass} bg-white/10`}>1 FINGER</span>
                       </div>
-                      <h3 className="text-2xl font-black italic tracking-tighter uppercase">Neural Dodge</h3>
-                      <p className={`text-[10px] uppercase leading-relaxed tracking-wider opacity-80`}>
+                      <h3 className="text-xl md:text-2xl font-black italic tracking-tighter uppercase">Neural Dodge</h3>
+                      <p className={`text-[9px] md:text-[10px] uppercase leading-relaxed tracking-wider opacity-80`}>
                         High-speed evasion test. Avoid fragments and optimize reflex sync.
                       </p>
                       {hoveredButton === 'dodge' && (
-                        <motion.div layoutId="select-indicator" className={`absolute -top-3 -right-3 w-6 h-6 ${activeTheme.uiBorderClass} bg-white flex items-center justify-center`}>
+                        <motion.div layoutId="select-indicator" className={`absolute -top-3 -right-3 w-6 h-6 ${activeTheme.uiBorderClass} bg-white hidden md:flex items-center justify-center`}>
                           <div className={`w-1.5 h-1.5 ${activeTheme.uiBgClass} rounded-full`} />
                         </motion.div>
                       )}
@@ -1292,18 +1413,18 @@ export default function App() {
                         setSelectedMenuItem(1);
                       }}
                       onMouseLeave={() => setHoveredButton(null)}
-                      className={`relative p-8 border transition-all duration-300 cursor-pointer flex flex-col gap-4 ${hoveredButton === 'maze' ? `${activeTheme.uiAccentClass} scale-105 shadow-[0_0_50px_rgba(255,255,255,0.1)]` : `bg-black/20 ${activeTheme.uiTextDimClass} ${activeTheme.uiBorderClass} hover:border-white/30`}`}
+                      className={`relative p-5 md:p-8 border transition-all duration-300 cursor-pointer flex flex-col gap-3 md:gap-4 ${hoveredButton === 'maze' ? `${activeTheme.uiAccentClass} scale-100 md:scale-105 shadow-[0_0_30px_rgba(255,255,255,0.1)]` : `bg-black/20 ${activeTheme.uiTextDimClass} ${activeTheme.uiBorderClass} hover:border-white/30`}`}
                     >
                       <div className="text-[10px] uppercase tracking-[0.4em] font-black flex justify-between">
                         <span>Mode_02</span>
-                        <span className={`text-[9px] px-1.5 py-0.5 rounded ml-2 ${activeTheme.uiTextClass} bg-white/10`}>2 FINGERS</span>
+                        <span className={`text-[8px] md:text-[9px] px-1.5 py-0.5 rounded ml-2 ${activeTheme.uiTextClass} bg-white/10`}>2 FINGERS</span>
                       </div>
-                      <h3 className="text-2xl font-black italic tracking-tighter uppercase">Maze Crawler</h3>
-                      <p className={`text-[10px] uppercase leading-relaxed tracking-wider opacity-80`}>
+                      <h3 className="text-xl md:text-2xl font-black italic tracking-tighter uppercase">Maze Crawler</h3>
+                      <p className={`text-[9px] md:text-[10px] uppercase leading-relaxed tracking-wider opacity-80`}>
                         Precision navigation task. Negotiate corridors to reach the exit port.
                       </p>
                       {hoveredButton === 'maze' && (
-                        <motion.div layoutId="select-indicator" className={`absolute -top-3 -right-3 w-6 h-6 ${activeTheme.uiBorderClass} bg-white flex items-center justify-center`}>
+                        <motion.div layoutId="select-indicator" className={`absolute -top-3 -right-3 w-6 h-6 ${activeTheme.uiBorderClass} bg-white hidden md:flex items-center justify-center`}>
                           <div className={`w-1.5 h-1.5 ${activeTheme.uiBgClass} rounded-full`} />
                         </motion.div>
                       )}
@@ -1312,19 +1433,20 @@ export default function App() {
 
                   <div className={`flex flex-col items-center gap-2 pt-4 border-t ${activeTheme.uiBorderClass}`}>
                      <div className={`text-[8px] uppercase tracking-[0.4em] font-black ${activeTheme.uiTextDimClass}`}>Difficulty_Level_Select</div>
-                     <div className="flex gap-4">
-                        <button onClick={() => { setSelectedDifficulty('easy'); (window as any).SELECTED_DIFFICULTY = 'easy'; }} className={`text-[11px] font-black uppercase tracking-widest px-3 py-1 rounded transition-colors ${selectedDifficulty === 'easy' ? 'bg-white text-black shadow-[0_0_15px_white]' : 'text-white/30 border border-white/10 hover:text-white/80'}`}>EASY</button>
-                        <button onClick={() => { setSelectedDifficulty('normal'); (window as any).SELECTED_DIFFICULTY = 'normal'; }} className={`text-[11px] font-black uppercase tracking-widest px-3 py-1 rounded transition-colors ${selectedDifficulty === 'normal' ? 'bg-white text-black shadow-[0_0_15px_white]' : 'text-white/30 border border-white/10 hover:text-white/80'}`}>NORMAL</button>
-                        <button onClick={() => { setSelectedDifficulty('hard'); (window as any).SELECTED_DIFFICULTY = 'hard'; }} className={`text-[11px] font-black uppercase tracking-widest px-3 py-1 rounded transition-colors ${selectedDifficulty === 'hard' ? 'bg-white text-black shadow-[0_0_15px_white]' : 'text-white/30 border border-white/10 hover:text-white/80'}`}>HARD</button>
+                     <div className="flex flex-wrap justify-center gap-2 md:gap-4">
+                        <button onClick={() => { setSelectedDifficulty('easy'); (window as any).SELECTED_DIFFICULTY = 'easy'; }} className={`text-[10px] md:text-[11px] font-black uppercase tracking-widest px-3 py-1.5 md:py-1 rounded transition-colors ${selectedDifficulty === 'easy' ? 'bg-white text-black shadow-[0_0_15px_white]' : 'text-white/30 border border-white/10 hover:text-white/80'}`}>EASY</button>
+                        <button onClick={() => { setSelectedDifficulty('normal'); (window as any).SELECTED_DIFFICULTY = 'normal'; }} className={`text-[10px] md:text-[11px] font-black uppercase tracking-widest px-3 py-1.5 md:py-1 rounded transition-colors ${selectedDifficulty === 'normal' ? 'bg-white text-black shadow-[0_0_15px_white]' : 'text-white/30 border border-white/10 hover:text-white/80'}`}>NORMAL</button>
+                        <button onClick={() => { setSelectedDifficulty('hard'); (window as any).SELECTED_DIFFICULTY = 'hard'; }} className={`text-[10px] md:text-[11px] font-black uppercase tracking-widest px-3 py-1.5 md:py-1 rounded transition-colors ${selectedDifficulty === 'hard' ? 'bg-white text-black shadow-[0_0_15px_white]' : 'text-white/30 border border-white/10 hover:text-white/80'}`}>HARD</button>
                      </div>
                   </div>
 
-                  <div className="flex flex-col items-center gap-6">
+                  <div className="flex flex-col items-center gap-4 md:gap-6">
                     <div className="flex items-center gap-3">
                       <Hand size={14} className={activeTheme.uiTextDimClass} />
-                      <span className={`text-[10px] uppercase tracking-[0.5em] ${activeTheme.uiTextDimClass}`}>CLICK MODE TO START</span>
+                      <span className={`text-[9px] md:text-[10px] uppercase tracking-[0.5em] ${activeTheme.uiTextDimClass}`}>CLICK MODE TO START</span>
                     </div>
                   </div>
+                 </div>
                 </div>
               </motion.div>
             )}
@@ -1334,64 +1456,67 @@ export default function App() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className={`absolute inset-0 ${activeTheme.uiBgClass} backdrop-blur-xl flex flex-col items-center justify-center text-center p-8 z-50 border border-red-500/10`}
+                className={`fixed inset-0 w-full h-[100dvh] ${activeTheme.uiBgClass} backdrop-blur-xl z-[100] border border-red-500/10 overflow-y-auto overflow-x-hidden`}
               >
-                <div className="space-y-12 w-full max-w-md">
-                  <div className="space-y-4">
+                <div className="min-h-full flex flex-col items-center justify-center text-center p-4 pt-16 pb-8 md:p-8">
+                  <div className="space-y-6 md:space-y-10 w-full max-w-md">
+                  <div className="space-y-2 md:space-y-4 pt-4">
                     <motion.div 
                       initial={{ scale: 0.9, opacity: 0 }}
                       animate={{ scale: 1, opacity: 1 }}
-                      className="text-red-500 text-[11px] font-black uppercase tracking-[0.6em]"
+                      className="text-red-500 text-[9px] md:text-[11px] font-black uppercase tracking-[0.6em]"
                     >
                       System_Failure
                     </motion.div>
-                    <h2 className={`text-7xl font-black italic tracking-tighter ${activeTheme.uiTextClass}`}>DEFEATED</h2>
+                    <h2 className={`text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-black italic tracking-tighter ${activeTheme.uiTextClass}`}>DEFEATED</h2>
                   </div>
 
-                  <div className={`grid grid-cols-2 gap-8 py-8 border-y ${activeTheme.uiBorderClass}`}>
+                  <div className={`grid grid-cols-2 gap-4 md:gap-8 py-6 md:py-8 border-y ${activeTheme.uiBorderClass}`}>
                     <div className="text-left">
-                      <div className={`text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} mb-1`}>Final_Score</div>
-                      <div className="text-3xl font-black italic">{score}</div>
+                      <div className={`text-[8px] md:text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} mb-1`}>Final_Score</div>
+                      <div className="text-xl md:text-3xl font-black italic">{score}</div>
                     </div>
                     <div className="text-left">
-                      <div className={`text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} mb-1`}>Level_Reach</div>
-                      <div className="text-3xl font-black italic">{level}</div>
+                      <div className={`text-[8px] md:text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} mb-1`}>Level_Reach</div>
+                      <div className="text-xl md:text-3xl font-black italic">{level}</div>
                     </div>
                     <div className="text-left">
-                      <div className={`text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} mb-1`}>Peak_Combo</div>
-                      <div className="text-3xl font-black italic text-yellow-400">x{(Math.floor(combo/5)+1).toFixed(1)}</div>
+                      <div className={`text-[8px] md:text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} mb-1`}>Peak_Combo</div>
+                      <div className="text-xl md:text-3xl font-black italic text-yellow-400">x{(Math.floor(combo/5)+1).toFixed(1)}</div>
                     </div>
                     <div className="text-left">
-                      <div className={`text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} mb-1`}>Global_High</div>
-                      <div className="text-3xl font-black italic text-green-400">{highScore}</div>
+                      <div className={`text-[8px] md:text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} mb-1`}>Global_High</div>
+                      <div className="text-xl md:text-3xl font-black italic text-green-400">{highScore}</div>
                     </div>
                   </div>
                   
-                  <button 
-                    onClick={() => setGameState('menu')}
-                    className={`w-full py-5 border ${activeTheme.uiBorderClass} ${activeTheme.uiTextDimClass} font-black italic text-[12px] tracking-[0.5em] uppercase hover:bg-white hover:text-black transition-all ${activeTheme.uiAccentClass}`}
-                  >
-                    Return_To_Menu
-                  </button>
+                  <div className="flex flex-col gap-3 pb-6">
+                    <button 
+                      onClick={() => setGameState('menu')}
+                      className={`w-full py-4 border ${activeTheme.uiBorderClass} ${activeTheme.uiTextDimClass} font-black italic text-[10px] md:text-[12px] tracking-[0.5em] uppercase hover:bg-white hover:text-black transition-all ${activeTheme.uiAccentClass}`}
+                    >
+                      Return_To_Menu
+                    </button>
 
-                  <button 
-                    onClick={() => {
-                        const mode = gameModeRef.current;
-                        startGame(mode);
-                    }}
-                    className={`flex flex-col items-center gap-4 ${activeTheme.uiTextDimClass} cursor-pointer hover:text-white transition-colors`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <RefreshCcw size={14} className="animate-[spin_4s_linear_infinite]" />
-                      <span className="text-[10px] uppercase tracking-[0.4em]">Clench Fist or Click Here to restart {gameMode.toUpperCase()}</span>
-                    </div>
-                  </button>
+                    <button 
+                      onClick={() => {
+                          const mode = gameModeRef.current;
+                          startGame(mode);
+                      }}
+                      className={`flex flex-col items-center gap-2 pt-2 ${activeTheme.uiTextDimClass} cursor-pointer hover:text-white transition-colors`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <RefreshCcw size={14} className="animate-[spin_4s_linear_infinite]" />
+                        <span className="text-[8px] md:text-[10px] uppercase tracking-[0.3em] md:tracking-[0.4em]">Clench Fist to Restart {gameMode.toUpperCase()}</span>
+                      </div>
+                    </button>
+                  </div>
                   
                   {fistProgress > 0 && (
                     <motion.div 
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
-                      className="mt-4 flex flex-col items-center gap-2"
+                      className="mt-2 flex flex-col items-center gap-2"
                     >
                       <div className="w-full h-1 bg-red-900/30 rounded-full overflow-hidden">
                         <motion.div 
@@ -1399,13 +1524,35 @@ export default function App() {
                           style={{ width: `${fistProgress}%` }}
                         />
                       </div>
-                      <div className="text-[9px] uppercase tracking-[0.3em] text-red-500 font-black animate-pulse">Confirming Reboot</div>
+                      <div className="text-[8px] md:text-[9px] uppercase tracking-[0.3em] text-red-500 font-black animate-pulse">Confirming Reboot</div>
                     </motion.div>
                   )}
+                 </div>
                 </div>
               </motion.div>
             )}
           </AnimatePresence>
+        </div>
+        </div>
+
+        {/* WebCam Feed */}
+        <div className="fixed bottom-4 right-4 md:bottom-8 md:right-8 w-24 h-18 sm:w-24 sm:h-18 md:w-32 md:h-24 border border-white/10 overflow-hidden z-[90] bg-black shadow-lg shadow-black/50 block">
+           <video 
+            ref={videoRef} 
+            autoPlay 
+            playsInline 
+            muted
+            className="absolute inset-0 w-full h-full object-cover scale-x-[-1] opacity-60 grayscale"
+          />
+          <canvas
+            ref={webcamCanvasRef}
+            className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+            width={128} // Just small resolution for overlay
+            height={96}
+          />
+          <div className="absolute bottom-1 left-1 bg-black/60 px-1 text-[7px] uppercase tracking-tighter text-white/50 z-10 pointer-events-none">
+            Biometric_Ref
+          </div>
         </div>
 
         {/* Visual Accents / Tech Logs */}
