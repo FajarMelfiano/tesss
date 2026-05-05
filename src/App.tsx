@@ -634,48 +634,68 @@ export default function App() {
     const antiCamp = (window as any).antiCampMult || 1.0;
     
     // Level-based difficulty + Dynamic Factor (difficultyRef)
-    // Much slower spawn at Level 1, gradually gets faster
-    const spawnDelayBase = Math.max(SPAWN_INTERVAL_MIN, (SPAWN_INTERVAL_MAX - (levelRef.current * 100)) / (difficultyRef.current * antiCamp));
-    const currentSpawnDelay = Math.max(SPAWN_INTERVAL_MIN - 200, spawnDelayBase - (scoreRef.current / 80));
+    const dynamicMin = Math.max(150, SPAWN_INTERVAL_MIN - (levelRef.current * 40 * difficultyRef.current));
+    const spawnDelayBase = Math.max(dynamicMin, (SPAWN_INTERVAL_MAX - (levelRef.current * 100)) / (difficultyRef.current * antiCamp));
+    const currentSpawnDelay = Math.max(dynamicMin, spawnDelayBase - (scoreRef.current / 80));
+
+    // Cap maximum balls so it's always winnable
+    const maxBalls = Math.min(40, 8 + Math.floor(levelRef.current * 4 * difficultyRef.current));
 
     if (timeSinceLastSpawn > currentSpawnDelay) {
-      const rand = Math.random();
-      let type: GameObject['type'] = 'enemy';
-      
-      if (rand < 0.1) {
-          const pRand = Math.random();
-          if (pRand < 0.2) type = 'emp';
-          else if (pRand < 0.6) type = 'shield';
-          else type = 'slow';
-      } else if (rand < 0.25) {
-          type = 'point';
-      } else if (rand < 0.35 && levelRef.current > 1) {
-          type = 'homing';
+      if (enemiesRef.current.length < maxBalls) {
+        // Spawn multiple at once sometimes at higher levels
+        const spawnCount = Math.min(
+           maxBalls - enemiesRef.current.length, 
+           levelRef.current > 3 && Math.random() < (levelRef.current * 0.08) ? (Math.random() < 0.2 ? 3 : 2) : 1
+        );
+
+        for (let i = 0; i < spawnCount; i++) {
+          const rand = Math.random();
+          let type: GameObject['type'] = 'enemy';
+          
+          if (rand < 0.1) {
+              const pRand = Math.random();
+              if (pRand < 0.2) type = 'emp';
+              else if (pRand < 0.6) type = 'shield';
+              else type = 'slow';
+          } else if (rand < 0.25) {
+              type = 'point';
+          } else if (rand < 0.35 && levelRef.current > 1) {
+              type = 'homing';
+          }
+
+          const radius = type === 'emp' ? 16 :
+                         type === 'point' ? 10 :
+                         type === 'homing' ? 12 :
+                         (type === 'shield' || type === 'slow') ? 15 :
+                         ENEMY_BASE_RADIUS + Math.random() * (levelRef.current * 2);
+
+          let x = Math.random() * (safeWidth - radius * 2) + radius;
+          
+          // Enemies have a high chance of spawning on the side where the player currently is
+          if ((type === 'enemy' || type === 'homing') && Math.random() < 0.7) {
+              const spread = 150 + (Math.random() * 100); 
+              const offset = (Math.random() - 0.5) * spread;
+              x = Math.max(radius, Math.min(safeWidth - radius, playerPosRef.current.x + offset));
+          }
+          
+          const baseSpeed = (1.5 + (levelRef.current * 0.4) + Math.random() * 1.5) * difficultyRef.current * antiCamp;
+          const heightFactor = safeHeight / 600; 
+
+          let speedMult = 1;
+          if (type === 'homing') speedMult = 0.6;
+          if (type === 'point') speedMult = 1.3;
+          if (type === 'shield' || type === 'slow' || type === 'emp') speedMult = 0.8;
+
+          enemiesRef.current.push({
+            x,
+            y: -radius - (Math.random() * 50 * i), // stagger Y if spawning multiple
+            radius,
+            speed: baseSpeed * heightFactor * speedMult,
+            type
+          });
+        }
       }
-
-      const radius = type === 'emp' ? 16 :
-                     type === 'point' ? 10 :
-                     type === 'homing' ? 12 :
-                     (type === 'shield' || type === 'slow') ? 15 :
-                     ENEMY_BASE_RADIUS + Math.random() * (levelRef.current * 2);
-
-      const x = Math.random() * (safeWidth - radius * 2) + radius;
-      
-      const baseSpeed = (1.5 + (levelRef.current * 0.4) + Math.random() * 1.5) * difficultyRef.current * antiCamp;
-      const heightFactor = safeHeight / 600; 
-
-      let speedMult = 1;
-      if (type === 'homing') speedMult = 0.6;
-      if (type === 'point') speedMult = 1.3;
-      if (type === 'shield' || type === 'slow' || type === 'emp') speedMult = 0.8;
-
-      enemiesRef.current.push({
-        x,
-        y: -radius,
-        radius,
-        speed: baseSpeed * heightFactor * speedMult,
-        type
-      });
       lastSpawnTimeRef.current = currentTime;
     }
   };
@@ -1733,7 +1753,7 @@ export default function App() {
                          { id: 'empRadius', name: 'EMP Yield', desc: 'Expands the destructive radius of EMP pick-ups.', icon: <AlertCircle size={20} />, lvl: profile.upgrades.empRadius },
                          { id: 'magnet', name: 'Data Magnet', desc: 'Attracts nearby data points and power-ups automatically.', icon: <RefreshCcw size={20} />, lvl: profile.upgrades.magnet },
                        ].map((upg) => {
-                          const cost = 500 * Math.pow(2, upg.lvl);
+                          const cost = Math.floor(5000 * Math.pow(3, upg.lvl));
                           const isMax = upg.lvl >= 5;
                           const canBuy = !isMax && profile.credits >= cost;
                           return (
