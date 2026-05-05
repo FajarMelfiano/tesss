@@ -1257,9 +1257,28 @@ export default function App() {
                setActivePowerUp(null);
                activePowerUpRef.current = null;
                powerUpTimerRef.current = 0;
-               // Destroy the wall to prevent getting stuck
-               mazeWallsRef.current = mazeWallsRef.current.filter(w => w !== wall);
-               break; 
+               // Snap player to the middle of the current cell so they don't hit the wall anymore
+               const diffMult = difficultyRef.current || 1;
+               let baseComplexity = 5;
+               if (diffMult < 1) baseComplexity = 3;
+               if (diffMult > 1) baseComplexity = 8;
+               const complexity = Math.min(15, baseComplexity + Math.floor(levelRef.current * diffMult / 1.5));
+               const cellSize = Math.min(safeWidth, safeHeight) / complexity;
+               const cols = Math.floor(safeWidth / cellSize);
+               const rows = Math.floor(safeHeight / cellSize);
+               const offsetX = (safeWidth - cols * cellSize) / 2;
+               const offsetY = (safeHeight - rows * cellSize) / 2;
+               
+               let r = Math.floor((playerPosRef.current.y - offsetY) / cellSize);
+               let c = Math.floor((playerPosRef.current.x - offsetX) / cellSize);
+               r = Math.max(0, Math.min(rows - 1, r));
+               c = Math.max(0, Math.min(cols - 1, c));
+               
+               playerPosRef.current.x = offsetX + c * cellSize + cellSize / 2;
+               playerPosRef.current.y = offsetY + r * cellSize + cellSize / 2;
+               targetPosRef.current = { ...playerPosRef.current };
+               isFirstHandRef.current = true;
+               break;
             } else {
                soundSystem.play('hit'); 
                setTimeout(() => { if(gameOver) soundSystem.play('gameover'); }, 200);
