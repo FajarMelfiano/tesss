@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState, memo, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Camera, RefreshCcw, Hand, AlertCircle, Shield, Zap, Palette, ArrowRight, ArrowLeft } from 'lucide-react';
+import { Camera, RefreshCcw, Hand, AlertCircle, Shield, Zap, Palette, ArrowRight, ArrowLeft, Info, X } from 'lucide-react';
 
 import { themes, Theme } from './themes';
 
@@ -51,8 +51,10 @@ export default function App() {
   const [combo, setCombo] = useState(0);
   const [showLevelUp, setShowLevelUp] = useState(false);
   const [highScore, setHighScore] = useState(0);
+  const [showTutorial, setShowTutorial] = useState(false);
   const [isHit, setIsHit] = useState(false);
   const [activePowerUp, setActivePowerUp] = useState<string | null>(null);
+  const activePowerUpRef = useRef<string | null>(null);
   const [fistProgress, setFistProgress] = useState(0); // 0 to 100
   const [fingerCount, setFingerCount] = useState(0);
   const [cursorPos, setCursorPos] = useState({ x: 0, y: 0 });
@@ -537,6 +539,7 @@ export default function App() {
     setCombo(0);
     setIsHit(false);
     setActivePowerUp(null);
+    activePowerUpRef.current = null;
     lastSpawnTimeRef.current = performance.now();
     
     // Give 2.5 seconds of preparation time on new start!
@@ -626,6 +629,7 @@ export default function App() {
         powerUpTimerRef.current -= 16.6; // approx 1 frame
         if (powerUpTimerRef.current <= 0) {
             setActivePowerUp(null);
+            activePowerUpRef.current = null;
         }
     }
 
@@ -669,7 +673,7 @@ export default function App() {
 
     enemiesRef.current = enemiesRef.current.filter((obj) => {
       let speedMult = 1;
-      if (activePowerUp === 'slow') speedMult = 0.5;
+      if (activePowerUpRef.current === 'slow') speedMult = 0.5;
       
       if (obj.type === 'homing') {
           const dxp = playerPosRef.current.x - obj.x;
@@ -686,9 +690,10 @@ export default function App() {
       // Collision Check
       if (distance < obj.radius + PLAYER_RADIUS) {
         if (obj.type === 'enemy' || obj.type === 'homing') {
-            if (activePowerUp === 'shield') {
+            if (activePowerUpRef.current === 'shield') {
                 createParticles(obj.x, obj.y, '#3b82f6', 15);
                 setActivePowerUp(null); // Shield consumed
+                activePowerUpRef.current = null;
                 powerUpTimerRef.current = 0;
                 return false; // Enemy destroyed
             } else {
@@ -706,6 +711,7 @@ export default function App() {
         } else {
             // Pick up power-up shield/slow
             setActivePowerUp(obj.type!);
+            activePowerUpRef.current = obj.type!;
             powerUpTimerRef.current = 5000; // 5 seconds
             createParticles(obj.x, obj.y, obj.type === 'shield' ? '#3b82f6' : '#facc15', 12);
             return false;
@@ -831,7 +837,7 @@ export default function App() {
     ctx.shadowColor = theme.playerShadow;
     
     // Shield Visual
-    if (activePowerUp === 'shield') {
+    if (activePowerUpRef.current === 'shield') {
         ctx.strokeStyle = theme.shieldColor;
         ctx.lineWidth = 3;
         ctx.beginPath();
@@ -1112,7 +1118,7 @@ export default function App() {
       {(gameState === 'menu' || gameState === 'gameover' || gameState === 'loading') && scriptsReady && (
         <div 
           ref={cursorRef}
-          className="fixed pointer-events-none z-[100] transition-none"
+          className="fixed pointer-events-none z-[1000] transition-none"
           style={{ willChange: 'transform' }}
         >
           {/* Finger Count Indicator */}
@@ -1440,14 +1446,154 @@ export default function App() {
                      </div>
                   </div>
 
-                  <div className="flex flex-col items-center gap-4 md:gap-6">
+                  <div className="flex flex-col items-center gap-4 md:gap-6 pt-4">
                     <div className="flex items-center gap-3">
                       <Hand size={14} className={activeTheme.uiTextDimClass} />
                       <span className={`text-[9px] md:text-[10px] uppercase tracking-[0.5em] ${activeTheme.uiTextDimClass}`}>CLICK MODE TO START</span>
                     </div>
+
+                    <button
+                      onClick={() => setShowTutorial(true)}
+                      className={`flex items-center gap-2 px-4 py-2 border ${activeTheme.uiBorderClass} ${activeTheme.uiTextDimClass} hover:text-white transition-colors text-[9px] md:text-[10px] uppercase tracking-widest mt-2`}
+                    >
+                      <Info size={14} />
+                      System_Tutorial
+                    </button>
                   </div>
                  </div>
                 </div>
+              </motion.div>
+            )}
+
+            {showTutorial && (
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className={`fixed inset-0 w-full h-[100dvh] bg-black/90 backdrop-blur-xl z-[200] flex items-center justify-center p-4`}
+              >
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                  transition={{ type: "spring", damping: 25, stiffness: 300 }}
+                  className={`relative w-full max-w-3xl max-h-[90vh] overflow-y-auto border bg-black/80 p-6 md:p-10 shadow-[0_0_50px_rgba(255,255,255,0.05)] border-white/20`}
+                >
+                  <div className="absolute inset-0 pointer-events-none overflow-hidden opacity-20">
+                     <div className="w-full h-[2px] bg-white absolute top-0 left-0 animate-[scan_3s_linear_infinite]" />
+                     <div className="w-full h-full bg-[linear-gradient(rgba(255,255,255,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.05)_1px,transparent_1px)] bg-[size:20px_20px]" />
+                  </div>
+                  <button 
+                    onClick={() => setShowTutorial(false)}
+                    className="absolute top-4 right-4 text-white/50 hover:text-white transition-colors z-10"
+                  >
+                    <X size={24} />
+                  </button>
+
+                  <h2 className="text-2xl md:text-4xl font-light tracking-[0.3em] uppercase text-white mb-8 text-center border-b border-white/20 pb-6 relative">
+                    <span className="animate-pulse shadow-white drop-shadow-md">System Protocol</span>
+                  </h2>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8 md:gap-12 relative z-10">
+                    {/* Controls */}
+                    <div className="space-y-6">
+                      <h3 className="text-white text-sm tracking-[0.4em] uppercase border-l-2 border-white pl-3">Gesture Controls</h3>
+                      
+                      <div className="space-y-4">
+                        <div className="flex gap-4 items-start bg-white/5 p-4 rounded-lg">
+                          <Hand size={24} className="text-blue-400 mt-1 shrink-0" />
+                          <div>
+                            <div className="text-white font-bold uppercase tracking-wider mb-1">Open Hand 🖐️</div>
+                            <div className="text-white/60 text-sm leading-relaxed">
+                              Move your cursor or player character around the arena by pointing your open palm. Tracked by the green biometric dot.
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-4 items-start bg-white/5 p-4 rounded-lg">
+                          <Hand size={24} className="text-red-400 mt-1 shrink-0 bg-red-400/20 rounded-full" />
+                          <div>
+                            <div className="text-white font-bold uppercase tracking-wider mb-1">Make a Fist ✊</div>
+                            <div className="text-white/60 text-sm leading-relaxed">
+                              Clench your hand to trigger an action (Select in Menu, Stop in Maze). Hold until the circular gauge fills.
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="flex gap-4 items-start bg-white/5 p-4 rounded-lg">
+                          <div className="text-2xl mt-1 shrink-0">✌️</div>
+                          <div>
+                            <div className="text-white font-bold uppercase tracking-wider mb-1">Two Fingers</div>
+                            <div className="text-white/60 text-sm leading-relaxed">
+                              Required for Maze Crawler. Keep index and middle fingers up to move precisely.
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Modes & Items */}
+                    <div className="space-y-6">
+                      <h3 className="text-white text-sm tracking-[0.4em] uppercase border-l-2 border-white pl-3">Combat Entities</h3>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-white/5 p-4 rounded-lg flex flex-col items-center text-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-red-500 shadow-[0_0_10px_red]"></div>
+                          <div className="text-white text-xs font-bold uppercase">Enemy</div>
+                          <div className="text-white/50 text-[10px]">Avoid at all costs</div>
+                        </div>
+
+                        <div className="bg-white/5 p-4 rounded-lg flex flex-col items-center text-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-red-500 shadow-[0_0_10px_red] animate-pulse"></div>
+                          <div className="text-white text-xs font-bold uppercase">Seeker</div>
+                          <div className="text-white/50 text-[10px]">Follows your movement</div>
+                        </div>
+
+                        <div className="bg-white/5 p-4 rounded-lg flex flex-col items-center text-center gap-2">
+                           <div className="w-6 h-6 border-2 border-blue-400 bg-blue-400/20 rounded-full flex items-center justify-center">
+                            <Shield size={12} className="text-blue-400" />
+                          </div>
+                          <div className="text-white text-xs font-bold uppercase">Shield</div>
+                          <div className="text-white/50 text-[10px]">Blocks 1 hit</div>
+                        </div>
+
+                        <div className="bg-white/5 p-4 rounded-lg flex flex-col items-center text-center gap-2">
+                          <div className="w-6 h-6 border-2 border-purple-500 shadow-[0_0_15px_purple] bg-purple-500 flex items-center justify-center rotate-45 transform">
+                            <Zap size={12} className="text-white -rotate-45" />
+                          </div>
+                          <div className="text-white text-xs font-bold uppercase">EMP</div>
+                          <div className="text-white/50 text-[10px]">Destroys all visible enemies</div>
+                        </div>
+
+                        <div className="bg-white/5 p-4 rounded-lg flex flex-col items-center text-center gap-2">
+                           <div className="w-6 h-6 border-2 border-green-500 bg-green-500 flex items-center justify-center rotate-45 transform">
+                          </div>
+                          <div className="text-white text-xs font-bold uppercase">Data Point</div>
+                          <div className="text-white/50 text-[10px]">+100 Score</div>
+                        </div>
+                        
+                        <div className="bg-white/5 p-4 rounded-lg flex flex-col items-center text-center gap-2">
+                           <div className="w-6 h-6 border-2 border-yellow-400 bg-yellow-400/20 rounded-full flex items-center justify-center">
+                            <div className="text-yellow-400 text-xs font-bold">»</div>
+                          </div>
+                          <div className="text-white text-xs font-bold uppercase">Time Dilation</div>
+                          <div className="text-white/50 text-[10px]">Slows all objects</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="mt-12 text-center relative z-10 w-full flex justify-center">
+                     <button
+                        onClick={() => setShowTutorial(false)}
+                        className={`group relative overflow-hidden px-10 py-4 bg-white text-black font-black uppercase tracking-[0.4em] transition-all hover:scale-105 active:scale-95 shadow-[0_0_30px_rgba(255,255,255,0.4)] flex items-center gap-3`}
+                     >
+                       <span className="relative z-10">Initialize Sequence</span>
+                       <ArrowRight size={18} className="relative z-10 group-hover:translate-x-1 transition-transform" />
+                       <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/50 to-transparent -translate-x-full group-hover:animate-[loading_1s_infinite] skew-x-12" />
+                     </button>
+                  </div>
+                </motion.div>
               </motion.div>
             )}
 

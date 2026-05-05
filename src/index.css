@@ -11,6 +11,16 @@
   50% { background: #451010; }
 }
 
+@keyframes scan {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+@keyframes loading {
+  0% { left: -100%; }
+  100% { left: 100%; }
+}
+
 .hit-flash {
   animation: flash 0.3s ease-out;
 }
