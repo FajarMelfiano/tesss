@@ -38,12 +38,46 @@ interface Particle {
   color: string;
 }
 
+interface PlayerProfile {
+  credits: number;
+  unlockedThemes: string[];
+  upgrades: {
+    duration: number;
+    empRadius: number;
+    magnet: number;
+  }
+}
+
+const defaultProfile: PlayerProfile = {
+  credits: 0,
+  unlockedThemes: ['terminal'],
+  upgrades: {
+    duration: 0,
+    empRadius: 0,
+    magnet: 0,
+  }
+};
+
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const webcamCanvasRef = useRef<HTMLCanvasElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [gameState, setGameState] = useState<'loading' | 'menu' | 'playing' | 'gameover'>('loading');
+  const [gameState, setGameState] = useState<'loading' | 'menu' | 'playing' | 'gameover' | 'shop'>('loading');
+  const [profile, setProfile] = useState<PlayerProfile>(() => {
+    const saved = localStorage.getItem('neuralProfile');
+    return saved ? JSON.parse(saved) : defaultProfile;
+  });
+
+  const saveProfile = (newProfile: PlayerProfile) => {
+    setProfile(newProfile);
+    localStorage.setItem('neuralProfile', JSON.stringify(newProfile));
+  };
+  const profileRef = useRef(profile);
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
+
   const [gameMode, setGameMode] = useState<'dodge' | 'maze'>('dodge');
   const gameModeRef = useRef<'dodge' | 'maze'>('dodge');
   const [score, setScore] = useState(0);
@@ -484,7 +518,7 @@ export default function App() {
 
     // 3. Convert to Physics Walls
     const wallWeight = Math.max(4, cellSize / 10);
-    const walls = [];
+    const walls: { x: number, y: number, w: number, h: number }[] = [];
 
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
@@ -508,6 +542,35 @@ export default function App() {
       y: offsetY + (rows - 1) * cellSize + cellSize / 2, 
       r: cellSize / 4 
     };
+
+    // 5. Populate Items in Maze
+    enemiesRef.current = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        // Skip start cell
+        if (r === 0 && c === 0) continue;
+        // Skip goal cell
+        if (r === rows - 1 && c === cols - 1) continue;
+        
+        if (Math.random() < 0.20 + (level * 0.02)) { // Scaling item chance
+             const cx = offsetX + c * cellSize + cellSize / 2;
+             const cy = offsetY + r * cellSize + cellSize / 2;
+             let type: GameObject['type'] = 'point';
+             const rand = Math.random();
+             if (rand < 0.1) type = 'shield';
+             else if (rand < 0.2) type = 'emp';
+             else if (rand < 0.3) type = 'slow';
+             
+             const radius = type === 'emp' ? 8 :
+                            type === 'point' ? 6 :
+                            (type === 'shield' || type === 'slow') ? 10 : 8;
+
+             enemiesRef.current.push({
+                x: cx, y: cy, radius: Math.min(radius, cellSize * 0.3), type, vx: 0, vy: 0, life: 1, color: ''
+             });
+        }
+      }
+    }
   };
 
   const startGame = (mode: 'dodge' | 'maze') => {
@@ -675,6 +738,18 @@ export default function App() {
       let speedMult = 1;
       if (activePowerUpRef.current === 'slow') speedMult = 0.5;
       
+      // Magnet Effect for 'point' and 'emp'
+      if ((obj.type === 'point' || obj.type === 'emp' || obj.type === 'shield' || obj.type === 'slow') && profileRef.current.upgrades.magnet > 0) {
+          const mRadius = 150 + profileRef.current.upgrades.magnet * 50;
+          const dxm = playerPosRef.current.x - obj.x;
+          const dym = playerPosRef.current.y - obj.y;
+          const distm = Math.sqrt(dxm * dxm + dym * dym);
+          if (distm < mRadius) {
+              obj.x += (dxm / distm) * 6;
+              obj.y += (dym / distm) * 6;
+          }
+      }
+
       if (obj.type === 'homing') {
           const dxp = playerPosRef.current.x - obj.x;
           const ext = Math.min(2 * speedMult, Math.abs(dxp) * 0.05);
@@ -712,7 +787,7 @@ export default function App() {
             // Pick up power-up shield/slow
             setActivePowerUp(obj.type!);
             activePowerUpRef.current = obj.type!;
-            powerUpTimerRef.current = 5000; // 5 seconds
+            powerUpTimerRef.current = 5000 + (profileRef.current.upgrades.duration * 1000); 
             createParticles(obj.x, obj.y, obj.type === 'shield' ? '#3b82f6' : '#facc15', 12);
             return false;
         }
@@ -734,13 +809,14 @@ export default function App() {
        
        enemiesRef.current.forEach(e => {
           if (e.type === 'enemy' || e.type === 'homing') {
-             createParticles(e.x, e.y, theme.enemyColor, 5);
+             createParticles(e.x, e.y, activeThemeRef.current.enemyColor, 5);
              scoreRef.current += 20; 
           }
        });
        
        enemiesRef.current = enemiesRef.current.filter(e => e.type !== 'enemy' && e.type !== 'homing');
-       (window as any).EMP_EFFECT = { r: 50, x: empX, y: empY, maxR: safeWidth * 1.5 };
+       const extRad = 1.0 + (profileRef.current.upgrades.empRadius * 0.2);
+       (window as any).EMP_EFFECT = { r: 50, x: empX, y: empY, maxR: safeWidth * extRad };
     }
 
     // 5. Update Particles
@@ -866,12 +942,9 @@ export default function App() {
     }
 
     // Update Score Logic (Ref only for performance)
-    if (!isFrozen) {
-        scoreRef.current += 1 + (Math.floor(comboRef.current) / 2);
-    }
-    const currentScore = Math.floor(scoreRef.current / 10);
+    const currentScore = scoreRef.current;
 
-    const nextLevel = Math.floor(currentScore / POINTS_PER_LEVEL) + 1;
+    const nextLevel = Math.floor(currentScore / (POINTS_PER_LEVEL * 10)) + 1;
     if (nextLevel > levelRef.current) {
       levelRef.current = nextLevel;
       setLevel(nextLevel);
@@ -908,6 +981,77 @@ export default function App() {
     playerPosRef.current.x = Math.max(mazePlayerRadiusRef.current, Math.min(safeWidth - mazePlayerRadiusRef.current, playerPosRef.current.x));
     playerPosRef.current.y = Math.max(mazePlayerRadiusRef.current, Math.min(safeHeight - mazePlayerRadiusRef.current, playerPosRef.current.y));
 
+    // 1.5 Update Power-ups & Items
+    if (powerUpTimerRef.current > 0) {
+        powerUpTimerRef.current -= 16.6; 
+        if (powerUpTimerRef.current <= 0) {
+            setActivePowerUp(null);
+            activePowerUpRef.current = null;
+        }
+    }
+
+    let activeEmp = false;
+    enemiesRef.current = enemiesRef.current.filter((obj) => {
+        // Magnet effect
+        if ((obj.type === 'point' || obj.type === 'emp' || obj.type === 'shield' || obj.type === 'slow') && profileRef.current.upgrades.magnet > 0) {
+            const mRadius = 150 + profileRef.current.upgrades.magnet * 50;
+            const dxm = playerPosRef.current.x - obj.x;
+            const dym = playerPosRef.current.y - obj.y;
+            const distm = Math.sqrt(dxm * dxm + dym * dym);
+            if (distm < mRadius) {
+               // Move slightly towards player
+               obj.x += (dxm / distm) * 2;
+               obj.y += (dym / distm) * 2;
+            }
+        }
+
+        const dx = playerPosRef.current.x - obj.x;
+        const dy = playerPosRef.current.y - obj.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance < obj.radius + mazePlayerRadiusRef.current) {
+            if (obj.type === 'point') {
+                createParticles(obj.x, obj.y, '#10b981', 10);
+                scoreRef.current += 100;
+                return false;
+            } else if (obj.type === 'emp') {
+                createParticles(obj.x, obj.y, '#a855f7', 20);
+                activeEmp = true;
+                return false;
+            } else if (obj.type === 'shield' || obj.type === 'slow') {
+                setActivePowerUp(obj.type!);
+                activePowerUpRef.current = obj.type!;
+                powerUpTimerRef.current = 5000 + (profileRef.current.upgrades.duration * 1000);
+                createParticles(obj.x, obj.y, obj.type === 'shield' ? '#3b82f6' : '#facc15', 12);
+                return false;
+            }
+            return false;
+        }
+        return true;
+    });
+
+    if (activeEmp) {
+        const empX = playerPosRef.current.x;
+        const empY = playerPosRef.current.y;
+        const extRad = 100 + (profileRef.current.upgrades.empRadius * 50);
+        (window as any).EMP_EFFECT = { r: 10, x: empX, y: empY, maxR: extRad };
+        scoreRef.current += 200;
+
+        // Break walls near EMP
+        mazeWallsRef.current = mazeWallsRef.current.filter(wall => {
+           const closestX = Math.max(wall.x, Math.min(empX, wall.x + wall.w));
+           const closestY = Math.max(wall.y, Math.min(empY, wall.y + wall.h));
+           const dx = empX - closestX;
+           const dy = empY - closestY;
+           const distance = Math.sqrt(dx * dx + dy * dy);
+           if (distance < extRad) {
+               createParticles(closestX, closestY, '#a855f7', 3);
+               return false; // Remove wall
+           }
+           return true;
+        });
+    }
+
     // 2. Collision Detection with Maze Walls
     let gameOver = false;
     for (const wall of mazeWallsRef.current) {
@@ -919,8 +1063,18 @@ export default function App() {
         const distance = Math.sqrt(dx * dx + dy * dy);
         
         if (distance < mazePlayerRadiusRef.current) {
-            gameOver = true;
-            break;
+            if (activePowerUpRef.current === 'shield') {
+               createParticles(playerPosRef.current.x, playerPosRef.current.y, '#3b82f6', 15);
+               setActivePowerUp(null);
+               activePowerUpRef.current = null;
+               powerUpTimerRef.current = 0;
+               // Destroy the wall to prevent getting stuck
+               mazeWallsRef.current = mazeWallsRef.current.filter(w => w !== wall);
+               break; 
+            } else {
+               gameOver = true;
+               break;
+            }
         }
     }
 
@@ -986,6 +1140,58 @@ export default function App() {
     ctx.beginPath();
     ctx.arc(mazeGoalRef.current.x, mazeGoalRef.current.y, mazeGoalRef.current.r * pulse, 0, Math.PI * 2);
     ctx.stroke();
+    
+    // Draw Objects (Items)
+    enemiesRef.current.forEach(obj => {
+      ctx.shadowBlur = 10;
+      if (obj.type === 'shield') {
+          ctx.fillStyle = theme.shieldColor;
+          ctx.shadowColor = theme.shieldColor;
+      } else if (obj.type === 'slow') {
+          ctx.fillStyle = theme.speedColor;
+          ctx.shadowColor = theme.speedColor;
+      } else if (obj.type === 'point') {
+          ctx.fillStyle = '#10b981'; // Green
+          ctx.shadowColor = '#10b981';
+      } else if (obj.type === 'emp') {
+          ctx.fillStyle = '#a855f7'; // Purple
+          ctx.shadowColor = '#a855f7';
+      }
+
+      ctx.beginPath();
+      if (obj.type === 'emp' || obj.type === 'point') {
+          // Inner core
+          ctx.arc(obj.x, obj.y, obj.radius * 0.5, 0, Math.PI * 2);
+          ctx.fill();
+          // Outer ring
+          ctx.beginPath();
+          ctx.arc(obj.x, obj.y, obj.radius, 0, Math.PI * 2);
+          ctx.strokeStyle = ctx.fillStyle;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+      } else {
+          ctx.arc(obj.x, obj.y, obj.radius, 0, Math.PI * 2);
+          ctx.fill();
+      }
+    });
+
+    // Draw EMP Effect
+    if ((window as any).EMP_EFFECT) {
+       const emp = (window as any).EMP_EFFECT;
+       ctx.beginPath();
+       ctx.arc(emp.x, emp.y, emp.r, 0, Math.PI * 2);
+       ctx.strokeStyle = `rgba(168, 85, 247, ${ Math.max(0, 1 - emp.r/emp.maxR) })`;
+       ctx.lineWidth = 15;
+       ctx.shadowBlur = 20;
+       ctx.shadowColor = '#a855f7';
+       ctx.stroke();
+       ctx.shadowBlur = 0;
+       
+       emp.r += 30; // speed of expansion
+       if (emp.r > emp.maxR) {
+           (window as any).EMP_EFFECT = null;
+       }
+    }
 
     // Draw Particles
     particlesRef.current.forEach(p => {
@@ -1003,10 +1209,21 @@ export default function App() {
     ctx.arc(playerPosRef.current.x, playerPosRef.current.y, mazePlayerRadiusRef.current, 0, Math.PI * 2);
     ctx.fill();
     
+    // Shield Visual
+    if (activePowerUpRef.current === 'shield') {
+        ctx.strokeStyle = theme.shieldColor;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(playerPosRef.current.x, playerPosRef.current.y, mazePlayerRadiusRef.current + 5, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
     // Add white/black ring based on theme to ensure visibility
     ctx.shadowBlur = 0;
     ctx.strokeStyle = theme.id === 'terminal' || theme.id === 'midnight' ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.3)';
     ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(playerPosRef.current.x, playerPosRef.current.y, mazePlayerRadiusRef.current, 0, Math.PI * 2);
     ctx.stroke();
     
     if (isFrozen) {
@@ -1019,11 +1236,7 @@ export default function App() {
         ctx.fillText("Syncing neural pathways...", safeWidth / 2, safeHeight / 2 - 20);
     }
 
-    // Update Scores
-    if (!isFrozen) {
-        scoreRef.current += 1;
-    }
-
+    // Removed passive score
     if (gameOver) {
         handleGameOver();
     } else {
@@ -1034,7 +1247,15 @@ export default function App() {
   const handleGameOver = () => {
     setIsHit(true);
     // Snapshot values for the gameover screen
-    const finalScore = Math.floor(scoreRef.current / 10);
+    const finalScore = scoreRef.current;
+    
+    // Add to user credits
+    setProfile(prev => {
+        const p = { ...prev, credits: prev.credits + finalScore };
+        localStorage.setItem('neuralProfile', JSON.stringify(p));
+        return p;
+    });
+
     setScore(finalScore);
     setCombo(Math.floor(comboRef.current));
     setLevel(levelRef.current);
@@ -1048,7 +1269,7 @@ export default function App() {
     // HUD update interval (10Hz is enough for visuals)
     useEffect(() => {
         const interval = setInterval(() => {
-            const s = Math.floor(scoreRef.current / 10).toString().padStart(5, '0');
+            const s = scoreRef.current.toString().padStart(5, '0');
             const l = `LVL ${levelRef.current}`;
             const cVal = Math.floor(comboRef.current);
             const cStr = `x${(Math.floor(cVal/5) + 1).toFixed(1)}`;
@@ -1115,7 +1336,7 @@ export default function App() {
       )}
 
       {/* Virtual Cursor (Optimized) */}
-      {(gameState === 'menu' || gameState === 'gameover' || gameState === 'loading') && scriptsReady && (
+      {(gameState === 'menu' || gameState === 'shop' || gameState === 'gameover' || gameState === 'loading') && scriptsReady && (
         <div 
           ref={cursorRef}
           className="fixed pointer-events-none z-[1000] transition-none"
@@ -1445,6 +1666,20 @@ export default function App() {
                         <button onClick={() => { setSelectedDifficulty('hard'); (window as any).SELECTED_DIFFICULTY = 'hard'; }} className={`text-[10px] md:text-[11px] font-black uppercase tracking-widest px-3 py-1.5 md:py-1 rounded transition-colors ${selectedDifficulty === 'hard' ? 'bg-white text-black shadow-[0_0_15px_white]' : 'text-white/30 border border-white/10 hover:text-white/80'}`}>HARD</button>
                      </div>
                   </div>
+                  
+                  {/* Neural Shop & Credits */}
+                  <div className={`flex justify-between items-center w-full pt-4 border-t ${activeTheme.uiBorderClass}`}>
+                     <div className="flex flex-col">
+                        <div className={`text-[8px] uppercase tracking-[0.4em] font-black ${activeTheme.uiTextDimClass}`}>Neural_Fragments</div>
+                        <div className={`text-xl font-mono ${activeTheme.uiTextClass}`}>{profile.credits}</div>
+                     </div>
+                     <button
+                        onClick={() => setGameState('shop')}
+                        className={`px-4 py-2 border ${activeTheme.uiBorderClass} ${activeTheme.uiTextDimClass} hover:text-white hover:bg-white/10 transition-colors text-[9px] md:text-[10px] uppercase tracking-widest`}
+                     >
+                        Black Market / Upgrades
+                     </button>
+                  </div>
 
                   <div className="flex flex-col items-center gap-4 md:gap-6 pt-4">
                     <div className="flex items-center gap-3">
@@ -1461,6 +1696,78 @@ export default function App() {
                     </button>
                   </div>
                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {gameState === 'shop' && (
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className={`fixed inset-0 w-full h-[100dvh] ${activeTheme.uiBgClass} backdrop-blur-md z-[100] overflow-y-auto overflow-x-hidden`}
+              >
+                <div className="min-h-full flex flex-col items-center justify-center p-4 pt-16 pb-8 md:p-8">
+                  <div className="w-full max-w-3xl space-y-6 md:space-y-12 bg-black/40 border border-white/10 p-6 md:p-10 shadow-2xl relative">
+                    <button 
+                      onClick={() => setGameState('menu')}
+                      className="absolute top-4 left-4 flex items-center gap-2 text-[9px] uppercase tracking-widest hover:text-white transition-colors opacity-70"
+                    >
+                      <ArrowLeft size={14} /> Back to Menu
+                    </button>
+                    
+                    <div className="text-center">
+                      <div className={`text-[9px] md:text-[10px] ${activeTheme.uiTextDimClass} uppercase tracking-[0.6em] mb-4`}>Black Market</div>
+                      <h2 className={`text-2xl md:text-5xl font-light tracking-[0.3em] uppercase ${activeTheme.uiTextClass}`}>System Upgrades</h2>
+                      <div className={`h-[1px] w-12 ${activeTheme.uiTextClass} opacity-20 mx-auto mt-4`} />
+                    </div>
+
+                    <div className="flex justify-between items-center bg-white/5 p-4 border border-white/10">
+                       <span className="text-xs uppercase tracking-widest opacity-80">Available Fragments</span>
+                       <span className="text-xl font-mono text-green-400 font-bold">{profile.credits}</span>
+                    </div>
+
+                    <div className="space-y-4">
+                       {[
+                         { id: 'duration', name: 'Power Duration', desc: 'Increases the active time of Shield and Slow power-ups.', icon: <Zap size={20}/>, lvl: profile.upgrades.duration },
+                         { id: 'empRadius', name: 'EMP Yield', desc: 'Expands the destructive radius of EMP pick-ups.', icon: <AlertCircle size={20} />, lvl: profile.upgrades.empRadius },
+                         { id: 'magnet', name: 'Data Magnet', desc: 'Attracts nearby data points and power-ups automatically.', icon: <RefreshCcw size={20} />, lvl: profile.upgrades.magnet },
+                       ].map((upg) => {
+                          const cost = 500 * Math.pow(2, upg.lvl);
+                          const isMax = upg.lvl >= 5;
+                          const canBuy = !isMax && profile.credits >= cost;
+                          return (
+                            <div key={upg.id} className="flex flex-col md:flex-row items-start md:items-center justify-between bg-white/5 border border-white/5 p-4 hover:border-white/20 transition-colors gap-4">
+                               <div className="flex items-center gap-4">
+                                  <div className="w-10 h-10 bg-white/10 flex items-center justify-center text-white/70">
+                                      {upg.icon}
+                                  </div>
+                                  <div>
+                                     <div className="flex justify-between w-full md:w-auto items-center md:items-end gap-3 mb-1">
+                                        <span className="font-bold uppercase tracking-wider text-sm">{upg.name}</span>
+                                        <span className="text-[10px] font-mono text-white/50 tracking-widest">LVL {upg.lvl}/5</span>
+                                     </div>
+                                     <p className="text-[10px] text-white/50 leading-relaxed md:max-w-sm">{upg.desc}</p>
+                                  </div>
+                               </div>
+                               <button 
+                                 onClick={() => {
+                                   if (canBuy) {
+                                      const p = { ...profile, credits: profile.credits - cost };
+                                      p.upgrades = { ...p.upgrades, [upg.id as keyof typeof p.upgrades]: upg.lvl + 1 };
+                                      saveProfile(p);
+                                   }
+                                 }}
+                                 disabled={!canBuy}
+                                 className={`px-4 py-2 text-xs uppercase tracking-widest font-black transition-all ${isMax ? 'opacity-30 text-white cursor-not-allowed border border-white/20' : canBuy ? 'bg-white text-black hover:bg-white/80 shadow-[0_0_15px_rgba(255,255,255,0.4)]' : 'border border-red-500/30 text-red-400 opacity-50 cursor-not-allowed'}`}
+                               >
+                                 {isMax ? 'MAXED' : canBuy ? `UPGRADE [${cost}]` : `NEED ${cost-profile.credits} MORE`}
+                               </button>
+                            </div>
+                          );
+                       })}
+                    </div>
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -1633,6 +1940,10 @@ export default function App() {
                     <div className="text-left">
                       <div className={`text-[8px] md:text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} mb-1`}>Global_High</div>
                       <div className="text-xl md:text-3xl font-black italic text-green-400">{highScore}</div>
+                    </div>
+                    <div className="col-span-2 text-center mt-2 p-3 bg-white/5 border border-white/10">
+                      <div className={`text-[8px] md:text-[9px] uppercase tracking-widest ${activeTheme.uiTextDimClass} mb-1`}>Fragments Acquired</div>
+                      <div className="text-2xl font-black font-mono text-white">+{score} <span className="text-[10px] text-white/50">Total: {profile.credits}</span></div>
                     </div>
                   </div>
                   
