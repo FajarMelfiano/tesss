@@ -9,6 +9,82 @@ import { Camera, RefreshCcw, Hand, AlertCircle, Shield, Zap, Palette, ArrowRight
 
 import { themes, Theme } from './themes';
 
+// Sound System (Web Audio API)
+const soundSystem = {
+  ctx: null as AudioContext | null,
+  init: () => {
+    if (!soundSystem.ctx) {
+       try { soundSystem.ctx = new (window.AudioContext || (window as any).webkitAudioContext)(); } catch(e){}
+    }
+    if (soundSystem.ctx && soundSystem.ctx.state === 'suspended') {
+       soundSystem.ctx.resume();
+    }
+  },
+  play: (type: 'point' | 'emp' | 'powerup' | 'gameover' | 'levelup' | 'hit') => {
+    if (!soundSystem.ctx) return;
+    try {
+        const ctx = soundSystem.ctx;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        
+        const now = ctx.currentTime;
+        if (type === 'point') {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, now);
+            osc.frequency.exponentialRampToValueAtTime(1200, now + 0.1);
+            gain.gain.setValueAtTime(0.1, now);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+            osc.start(now);
+            osc.stop(now + 0.1);
+        } else if (type === 'emp') {
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(150, now);
+            osc.frequency.exponentialRampToValueAtTime(40, now + 0.5);
+            gain.gain.setValueAtTime(0.2, now);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+            osc.start(now);
+            osc.stop(now + 0.5);
+        } else if (type === 'powerup') {
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(440, now);
+            osc.frequency.setValueAtTime(660, now + 0.1);
+            osc.frequency.setValueAtTime(880, now + 0.2);
+            gain.gain.setValueAtTime(0.1, now);
+            gain.gain.linearRampToValueAtTime(0, now + 0.3);
+            osc.start(now);
+            osc.stop(now + 0.3);
+        } else if (type === 'hit') {
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(100, now);
+            osc.frequency.exponentialRampToValueAtTime(20, now + 0.2);
+            gain.gain.setValueAtTime(0.2, now);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+            osc.start(now);
+            osc.stop(now + 0.2);
+        } else if (type === 'levelup') {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(440, now);
+            osc.frequency.setValueAtTime(554, now + 0.1);
+            osc.frequency.setValueAtTime(659, now + 0.2);
+            osc.frequency.setValueAtTime(880, now + 0.3);
+            gain.gain.setValueAtTime(0.1, now);
+            gain.gain.linearRampToValueAtTime(0, now + 0.6);
+            osc.start(now);
+            osc.stop(now + 0.6);
+        } else if (type === 'gameover') {
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(300, now);
+            osc.frequency.exponentialRampToValueAtTime(50, now + 1);
+            gain.gain.setValueAtTime(0.2, now);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 1);
+            osc.start(now);
+            osc.stop(now + 1);
+        }
+    } catch(e) {}
+  }
+};
 
 // Game Constants
 const PLAYER_RADIUS = 15;
@@ -25,8 +101,20 @@ interface GameObject {
   x: number;
   y: number;
   radius: number;
-  speed: number;
+  speed?: number;
   type?: 'enemy' | 'homing' | 'shield' | 'slow' | 'point' | 'emp';
+  vx?: number;
+  vy?: number;
+  life?: number;
+  color?: string;
+}
+
+interface FloatingText {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  life: number;
 }
 
 interface Particle {
@@ -130,9 +218,26 @@ export default function App() {
   const mazeGoalRef = useRef({ x: 0, y: 0, r: 30 });
   const mazePlayerRadiusRef = useRef(15);
   const particlesRef = useRef<Particle[]>([]);
+  const floatingTextsRef = useRef<FloatingText[]>([]);
   const lastSpawnTimeRef = useRef(0);
   const fistProgressRef = useRef(0);
+
+  // Sound System Init
+  useEffect(() => {
+    const initSound = () => soundSystem.init();
+    window.addEventListener('click', initSound);
+    window.addEventListener('touchstart', initSound);
+    return () => {
+      window.removeEventListener('click', initSound);
+      window.removeEventListener('touchstart', initSound);
+    };
+  }, []);
+
+  const createFloatingText = (x: number, y: number, text: string, color: string) => {
+      floatingTextsRef.current.push({ x, y, text, color, life: 1 });
+  };
   const lastFistTimeRef = useRef(0);
+  const lastHandSeenTimeRef = useRef(performance.now());
   const scoreRef = useRef(0);
   const levelRef = useRef(1);
   const comboRef = useRef(0);
@@ -276,6 +381,7 @@ export default function App() {
         }
 
         if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+          lastHandSeenTimeRef.current = performance.now();
           const landmarks = results.multiHandLandmarks[0];
           
           // 1. Relative Position Tracking
@@ -583,6 +689,7 @@ export default function App() {
     (window as any).SELECTED_MODE = mode; // keep it in sync for restarts
     enemiesRef.current = [];
     particlesRef.current = [];
+    floatingTextsRef.current = [];
     scoreRef.current = 0;
     levelRef.current = 1;
     comboRef.current = 0;
@@ -707,6 +814,20 @@ export default function App() {
     const safeHeight = height || 480;
     if (!ctx) return;
 
+    if (performance.now() - lastHandSeenTimeRef.current > 1500) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, 0, safeWidth, safeHeight);
+        ctx.fillStyle = '#ff4444';
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 20px "Inter", sans-serif';
+        ctx.fillText('BIOMETRIC LINK LOST', safeWidth / 2, safeHeight / 2 - 10);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'normal 14px "Inter", sans-serif';
+        ctx.fillText('Awaiting hand detection...', safeWidth / 2, safeHeight / 2 + 20);
+        requestRef.current = requestAnimationFrame(gameLoop);
+        return;
+    }
+
     // 1. Power-up timer logic
     if (powerUpTimerRef.current > 0) {
         powerUpTimerRef.current -= 16.6; // approx 1 frame
@@ -792,15 +913,20 @@ export default function App() {
                 powerUpTimerRef.current = 0;
                 return false; // Enemy destroyed
             } else {
+                soundSystem.play('gameover');
                 gameOver = true;
             }
         } else if (obj.type === 'point') {
             createParticles(obj.x, obj.y, '#10b981', 10);
             scoreRef.current += 100;
             comboRef.current = Math.min(50, comboRef.current + 2);
+            soundSystem.play('point');
+            createFloatingText(obj.x, obj.y, '+100', '#10b981');
             return false;
         } else if (obj.type === 'emp') {
             createParticles(obj.x, obj.y, '#a855f7', 20);
+            soundSystem.play('emp');
+            createFloatingText(obj.x, obj.y, 'EMP!', '#a855f7');
             activeEmp = true;
             return false;
         } else {
@@ -809,6 +935,8 @@ export default function App() {
             activePowerUpRef.current = obj.type!;
             powerUpTimerRef.current = 5000 + (profileRef.current.upgrades.duration * 1000); 
             createParticles(obj.x, obj.y, obj.type === 'shield' ? '#3b82f6' : '#facc15', 12);
+            soundSystem.play('powerup');
+            createFloatingText(obj.x, obj.y, obj.type.toUpperCase(), obj.type === 'shield' ? '#3b82f6' : '#facc15');
             return false;
         }
       }
@@ -869,6 +997,22 @@ export default function App() {
         ctx.globalAlpha = p.life;
         ctx.fillStyle = p.color;
         ctx.fillRect(p.x, p.y, 2, 2);
+    });
+    ctx.globalAlpha = 1;
+
+    // Draw Floating Texts
+    floatingTextsRef.current = floatingTextsRef.current.filter(t => {
+        ctx.globalAlpha = t.life;
+        ctx.fillStyle = t.color;
+        ctx.font = 'bold 16px "Inter", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.shadowBlur = 5;
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.fillText(t.text, t.x, t.y);
+        ctx.shadowBlur = 0;
+        t.y -= 1; // Float up
+        t.life -= 0.02;
+        return t.life > 0;
     });
     ctx.globalAlpha = 1;
 
@@ -968,6 +1112,7 @@ export default function App() {
     if (nextLevel > levelRef.current) {
       levelRef.current = nextLevel;
       setLevel(nextLevel);
+      soundSystem.play('levelup');
       setShowLevelUp(true);
       setTimeout(() => setShowLevelUp(false), 2000);
     }
@@ -985,6 +1130,20 @@ export default function App() {
     const safeWidth = width || 640;
     const safeHeight = height || 480;
     if (!ctx) return;
+
+    if (performance.now() - lastHandSeenTimeRef.current > 1500) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, 0, safeWidth, safeHeight);
+        ctx.fillStyle = '#ff4444';
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 20px "Inter", sans-serif';
+        ctx.fillText('BIOMETRIC LINK LOST', safeWidth / 2, safeHeight / 2 - 10);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'normal 14px "Inter", sans-serif';
+        ctx.fillText('Awaiting hand detection...', safeWidth / 2, safeHeight / 2 + 20);
+        requestRef.current = requestAnimationFrame(mazeLoop);
+        return;
+    }
 
     // 1. Update Player Position
     const isFrozen = performance.now() < ((window as any).LEVEL_TRANSITION_UNTIL || 0);
@@ -1033,9 +1192,13 @@ export default function App() {
             if (obj.type === 'point') {
                 createParticles(obj.x, obj.y, '#10b981', 10);
                 scoreRef.current += 100;
+                soundSystem.play('point');
+                createFloatingText(obj.x, obj.y, '+100', '#10b981');
                 return false;
             } else if (obj.type === 'emp') {
                 createParticles(obj.x, obj.y, '#a855f7', 20);
+                soundSystem.play('emp');
+                createFloatingText(obj.x, obj.y, 'EMP!', '#a855f7');
                 activeEmp = true;
                 return false;
             } else if (obj.type === 'shield' || obj.type === 'slow') {
@@ -1047,6 +1210,8 @@ export default function App() {
                     powerUpTimerRef.current = Number.MAX_SAFE_INTEGER;
                 }
                 createParticles(obj.x, obj.y, obj.type === 'shield' ? '#3b82f6' : '#facc15', 12);
+                soundSystem.play('powerup');
+                createFloatingText(obj.x, obj.y, obj.type.toUpperCase(), obj.type === 'shield' ? '#3b82f6' : '#facc15');
                 return false;
             }
             return false;
@@ -1096,6 +1261,8 @@ export default function App() {
                mazeWallsRef.current = mazeWallsRef.current.filter(w => w !== wall);
                break; 
             } else {
+               soundSystem.play('hit'); 
+               setTimeout(() => { if(gameOver) soundSystem.play('gameover'); }, 200);
                gameOver = true;
                break;
             }
@@ -1112,6 +1279,7 @@ export default function App() {
         scoreRef.current += 1000;
         levelRef.current += 1;
         setLevel(levelRef.current);
+        soundSystem.play('levelup');
         setShowLevelUp(true);
         setTimeout(() => setShowLevelUp(false), 2000);
         generateMaze(safeWidth, safeHeight, levelRef.current);
@@ -1222,6 +1390,22 @@ export default function App() {
         ctx.globalAlpha = p.life;
         ctx.fillStyle = p.color;
         ctx.fillRect(p.x, p.y, 2, 2);
+    });
+    ctx.globalAlpha = 1;
+
+    // Draw Floating Texts
+    floatingTextsRef.current = floatingTextsRef.current.filter(t => {
+        ctx.globalAlpha = t.life;
+        ctx.fillStyle = t.color;
+        ctx.font = 'bold 16px "Inter", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.shadowBlur = 5;
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.fillText(t.text, t.x, t.y);
+        ctx.shadowBlur = 0;
+        t.y -= 1; // Float up
+        t.life -= 0.02;
+        return t.life > 0;
     });
     ctx.globalAlpha = 1;
 
