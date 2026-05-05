@@ -115,6 +115,7 @@ export default function App() {
   const hudScoreRef = useRef<HTMLDivElement>(null);
   const hudLvlRef = useRef<HTMLDivElement>(null);
   const hudComboRef = useRef<HTMLDivElement>(null);
+  const hudProgressRef = useRef<HTMLDivElement>(null);
   const mHudScoreRef = useRef<HTMLDivElement>(null);
   const mHudLvlRef = useRef<HTMLDivElement>(null);
   const mHudComboRef = useRef<HTMLDivElement>(null);
@@ -244,9 +245,9 @@ export default function App() {
 
       hands.setOptions({
         maxNumHands: 1,
-        modelComplexity: 0, // Reverted to 0 for better performance/lag reduction
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
+        modelComplexity: 1, 
+        minDetectionConfidence: 0.4,
+        minTrackingConfidence: 0.4
       });
 
       hands.onResults((results: any) => {
@@ -557,13 +558,12 @@ export default function App() {
              const cy = offsetY + r * cellSize + cellSize / 2;
              let type: GameObject['type'] = 'point';
              const rand = Math.random();
-             if (rand < 0.1) type = 'shield';
-             else if (rand < 0.2) type = 'emp';
-             else if (rand < 0.3) type = 'slow';
+             if (rand < 0.15) type = 'shield';
+             else if (rand < 0.3) type = 'emp';
              
              const radius = type === 'emp' ? 8 :
                             type === 'point' ? 6 :
-                            (type === 'shield' || type === 'slow') ? 10 : 8;
+                            type === 'shield' ? 10 : 8;
 
              enemiesRef.current.push({
                 x: cx, y: cy, radius: Math.min(radius, cellSize * 0.3), type, vx: 0, vy: 0, life: 1, color: ''
@@ -964,7 +964,7 @@ export default function App() {
     // Update Score Logic (Ref only for performance)
     const currentScore = scoreRef.current;
 
-    const nextLevel = Math.floor(currentScore / (POINTS_PER_LEVEL * 10)) + 1;
+    const nextLevel = Math.floor(currentScore / (POINTS_PER_LEVEL * 3)) + 1;
     if (nextLevel > levelRef.current) {
       levelRef.current = nextLevel;
       setLevel(nextLevel);
@@ -1041,7 +1041,11 @@ export default function App() {
             } else if (obj.type === 'shield' || obj.type === 'slow') {
                 setActivePowerUp(obj.type!);
                 activePowerUpRef.current = obj.type!;
-                powerUpTimerRef.current = 5000 + (profileRef.current.upgrades.duration * 1000);
+                if (gameModeRef.current !== 'maze') {
+                    powerUpTimerRef.current = 5000 + (profileRef.current.upgrades.duration * 1000);
+                } else {
+                    powerUpTimerRef.current = Number.MAX_SAFE_INTEGER;
+                }
                 createParticles(obj.x, obj.y, obj.type === 'shield' ? '#3b82f6' : '#facc15', 12);
                 return false;
             }
@@ -1293,9 +1297,11 @@ export default function App() {
             const l = `LVL ${levelRef.current}`;
             const cVal = Math.floor(comboRef.current);
             const cStr = `x${(Math.floor(cVal/5) + 1).toFixed(1)}`;
+            const prog = `${(scoreRef.current % (POINTS_PER_LEVEL * 3)) / (POINTS_PER_LEVEL * 3 / 100)}%`;
 
             if (hudScoreRef.current) hudScoreRef.current.innerText = s;
             if (hudLvlRef.current) hudLvlRef.current.innerText = l;
+            if (hudProgressRef.current) hudProgressRef.current.style.width = prog;
             if (mHudScoreRef.current) mHudScoreRef.current.innerText = s.slice(-4);
             if (mHudLvlRef.current) mHudLvlRef.current.innerText = `L${levelRef.current}`;
 
@@ -1422,16 +1428,21 @@ export default function App() {
                 {/* Center: Score & Telemetry - Dominant HUD */}
                 <div className="flex flex-col items-center w-full md:w-1/3 shrink-0">
                   <div className={`text-[9px] md:text-[10px] uppercase tracking-[0.4em] ${activeTheme.uiTextDimClass} mb-1 drop-shadow-md`}>Neural_Telemetry</div>
-                  <div className="flex items-baseline gap-3 bg-black/40 backdrop-blur-sm px-6 py-2 rounded-xl border border-white/5 shadow-2xl">
-                    <div ref={hudScoreRef} className={`text-4xl md:text-5xl font-black italic tracking-tighter ${activeTheme.uiTextClass} drop-shadow-md`}>
-                      00000
-                    </div>
-                    <div className="flex flex-col items-start justify-center">
-                      <div ref={hudLvlRef} className={`text-[10px] font-bold ${activeTheme.uiTextClass} bg-black/60 px-2 py-0.5 rounded-sm mb-1`}>LVL 1</div>
-                      <div ref={hudComboRef} className="text-yellow-400 text-[10px] md:text-xs font-black italic transition-opacity duration-200 opacity-0 bg-black/60 px-2 rounded-sm drop-shadow-lg">
-                          x1.0
-                      </div>
-                    </div>
+                  <div className="flex flex-col bg-black/40 backdrop-blur-sm border border-white/5 rounded-xl shadow-2xl overflow-hidden relative">
+                     <div className="flex items-baseline gap-3 px-6 py-2">
+                        <div ref={hudScoreRef} className={`text-4xl md:text-5xl font-black italic tracking-tighter ${activeTheme.uiTextClass} drop-shadow-md`}>
+                          00000
+                        </div>
+                        <div className="flex flex-col items-start justify-center">
+                          <div ref={hudLvlRef} className={`text-[10px] font-bold ${activeTheme.uiTextClass} bg-black/60 px-2 py-0.5 rounded-sm mb-1`}>LVL 1</div>
+                          <div ref={hudComboRef} className="text-yellow-400 text-[10px] md:text-xs font-black italic transition-opacity duration-200 opacity-0 bg-black/60 px-2 rounded-sm drop-shadow-lg">
+                              x1.0
+                          </div>
+                        </div>
+                     </div>
+                     <div className={`w-full h-1 bg-white/10 ${gameMode === 'maze' ? 'hidden' : ''}`}>
+                         <div ref={hudProgressRef} className={`h-full ${activeTheme.uiBgClass} transition-all duration-200 drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]`} style={{ width: '0%' }} />
+                     </div>
                   </div>
                   {/* Mobile Level shortcut */}
                   <div ref={mHudLvlRef} className="md:hidden mt-1 text-[8px] font-bold uppercase tracking-widest opacity-50">L1</div>
@@ -1753,7 +1764,7 @@ export default function App() {
                          { id: 'empRadius', name: 'EMP Yield', desc: 'Expands the destructive radius of EMP pick-ups.', icon: <AlertCircle size={20} />, lvl: profile.upgrades.empRadius },
                          { id: 'magnet', name: 'Data Magnet', desc: 'Attracts nearby data points and power-ups automatically.', icon: <RefreshCcw size={20} />, lvl: profile.upgrades.magnet },
                        ].map((upg) => {
-                          const cost = Math.floor(5000 * Math.pow(3, upg.lvl));
+                          const cost = 10000 * (upg.lvl + 1);
                           const isMax = upg.lvl >= 5;
                           const canBuy = !isMax && profile.credits >= cost;
                           return (
@@ -2045,7 +2056,7 @@ export default function App() {
                {/* Progress to next level */}
               <motion.div 
                 className="absolute top-0 left-0 h-full bg-white transition-all duration-300"
-                style={{ width: `${(score % POINTS_PER_LEVEL) / (POINTS_PER_LEVEL / 100)}%` }}
+                style={{ width: `${(score % (POINTS_PER_LEVEL * 3)) / (POINTS_PER_LEVEL * 3 / 100)}%` }}
               />
               {/* Secondary pulse/glow for the progress bar */}
               <motion.div 
